@@ -1,0 +1,344 @@
+%% oranSim.m
+% 多小区 NR 系统级仿真骨架（O-RAN 风格：多小区 + MIMO + MU-MIMO 调度）
+% 场景设定：
+%   - 宏小区：5G NR，3.5 GHz，60 MHz，SCS = 30 kHz，覆盖半径 macroRadius（大）
+%   - 微小区：5G NR，30 GHz mmWave，60 MHz，SCS = 30 kHz，覆盖半径 smallRadius（小）
+%   - 微小区都布置在宏小区覆盖范围内
+%   - 当前版本：每个 UE 只连接一个 gNB（宏 or 最近微小区）
+%   - 连接选择由本地函数 RIC_steering 决定，为后续 RIC/xApp traffic steering 留接口
+
+%% 0) 支持包检查 & 初始化
+wirelessnetworkSupportPackageCheck;
+rng("default");
+numFrameSimulation = 500;                     % 500帧 = 5秒
+networkSimulator  = wirelessNetworkSimulator.init;
+
+%% 1) PHY / MIMO / MU-MIMO 配置
+phyAbstractionType         = "linkToSystemMapping";
+duplexType                 = "FDD";
+csiMeasurementSignalDLType = "CSI-RS";        % 也可以改成 "SRS"
+
+% MU-MIMO 参数：SRS 和 CSI-RS 情况稍有不同
+if csiMeasurementSignalDLType == "SRS"
+    muMIMOConfiguration = struct( ...
+        MaxNumUsersPaired = 2, ...
+        MaxNumLayers      = 8, ...
+        MinNumRBs         = 2, ...
+        MinSINR           = 10);      % 只在 SRS 模式下有效
+else
+    muMIMOConfiguration = struct( ...
+        MaxNumUsersPaired = 2, ...
+        MaxNumLayers      = 8, ...
+        MinNumRBs         = 2);       % CSI-RS 模式不带 MinSINR，避免警告
+end
+
+allocationType = 0;
+
+tddConfig = struct(DLULPeriodicity=5,NumDLSlots=2,NumDLSymbols=12,...
+                   NumULSymbols=1,NumULSlots=2);
+
+%% 2) gNB 拓扑：1 宏 + 4 微
+numMacro = 1;
+numSmall = 4;
+numCells = numMacro + numSmall;
+
+% 宏小区位置（中心）
+macroPos  = [0 0 30];
+
+% 微小区与宏小区的"中心距离"（微小区中心都在宏覆盖内部）
+ringRadiusSmallCells = 500;      % 微小区中心距宏站的环形半径
+
+gNBPositions = zeros(numCells,3);
+gNBPositions(1,:) = macroPos;
+
+for i = 1:numSmall
+    angle = 2*pi*(i-1)/numSmall;
+    gNBPositions(1+i,:) = [ ...
+        ringRadiusSmallCells*cos(angle), ...
+        ringRadiusSmallCells*sin(angle), ...
+        10];                       % 微小区高度 10 m
+end
+
+gNBOfInterestIdx = 1;              % KPI 主要看宏小区
+gNBNames = "gNB-" + (1:numCells);
+
+numTxAntGNB = 16;
+numRxAntGNB = 16;
+
+% ---------- 5G 两个频段参数 ----------
+macroCF = 3.5e9;   % 宏小区载频 3.5 GHz
+smallCF = 30e9;    % 微小区载频 30 GHz（mmWave）
+bw5g    = 60e6;    % 所有 5G 带宽 60 MHz
+scs5g   = 30e3;    % 对于 60 MHz，Toolbox 要求 SCS 只能是 30 或 60 kHz
+
+% ---------- 覆盖半径（可视化用） ----------
+macroRadius = 800;   % 宏小区覆盖半径（大）
+smallRadius = 150;   % 微小区覆盖半径（小），且 500+150 < 800 ⇒ 微小区在宏小区范围内
+
+%% 3) 创建 gNB（根据索引区分宏/微 + 频段）
+gNBs = nrGNB.empty;
+for i = 1:numCells
+    if i == 1
+        % 宏小区：3.5 GHz
+        cf    = macroCF;
+        bw    = bw5g;
+        scs   = scs5g;
+        txPow = 43;   % 宏小区发射功率 43 dBm
+    else
+        % 微小区：30 GHz mmWave
+        cf    = smallCF;
+        bw    = bw5g;
+        scs   = scs5g;
+        txPow = 43;   % 如需区分功率可改小一些，例如 38
+    end
+
+    gNBs(i) = nrGNB( ...
+        Name                 = gNBNames(i), ...
+        Position             = gNBPositions(i,:), ...
+        CarrierFrequency     = cf, ...
+        ChannelBandwidth     = bw, ...
+        SubcarrierSpacing    = scs, ...
+        DuplexMode           = duplexType, ...
+        DLULConfigTDD        = tddConfig, ...
+        NumTransmitAntennas  = numTxAntGNB, ...
+        NumReceiveAntennas   = numRxAntGNB, ...
+        ReceiveGain          = 11, ...
+        TransmitPower        = txPow, ...
+        PHYAbstractionMethod = phyAbstractionType, ...
+        SRSPeriodicityUE     = 40);
+end
+
+% 调度器配置：启用 MU-MIMO 能力
+for g = 1:numCells
+    configureScheduler(gNBs(g), ...
+        ResourceAllocationType   = allocationType, ...
+        MaxNumUsersPerTTI        = 10, ...
+        MUMIMOConfigDL           = muMIMOConfiguration, ...
+        CSIMeasurementSignalDL   = csiMeasurementSignalDLType);
+end
+
+%% 4) UE 位置：全部撒在宏小区覆盖里，然后通过 RIC_steering 挂到宏 or 最近微小区
+
+numUEsTotal = 60;
+ueHeight    = 1.5;
+
+% 在宏小区大圆内随机撒 UE
+theta = rand(numUEsTotal,1)*2*pi;
+r     = sqrt(rand(numUEsTotal,1)) * macroRadius;
+x     = macroPos(1) + r.*cos(theta);
+y     = macroPos(2) + r.*sin(theta);
+z     = ueHeight * ones(numUEsTotal,1);
+allUEPos = [x y z];
+
+% 根据位置 + RIC_steering 决定每个 UE 连接哪个 gNB
+cellUEIdx = cell(numCells,1);   % 每个 cell 下有哪些 UE index
+
+smallIdx = 2:numCells;
+
+for ueIdx = 1:numUEsTotal
+    pos2D = allUEPos(ueIdx,1:2);
+
+    % 到所有微小区的距离
+    distSmall = vecnorm(gNBPositions(smallIdx,1:2) - pos2D, 2, 2);
+
+    % === RIC 接口：由 RIC_steering 决定最终挂载的小区 ===
+    assignedCell = RIC_steering(pos2D, distSmall, smallIdx, smallRadius);
+
+    cellUEIdx{assignedCell}(end+1) = ueIdx;
+end
+
+% 按 cell 划分 UE 结构
+UEs = cell(numCells,1);
+numTxAntUE = 4;
+numRxAntUE = 4;
+
+for cellIdx = 1:numCells
+    ueIdxList = cellUEIdx{cellIdx};
+    if isempty(ueIdxList)
+        UEs{cellIdx} = nrUE.empty;
+        continue;
+    end
+
+    ueNames = "UE-" + ueIdxList + "-Cell" + cellIdx;
+    UEs{cellIdx} = nrUE( ...
+        Name                 = ueNames, ...
+        Position             = allUEPos(ueIdxList,:), ...
+        NumTransmitAntennas  = numTxAntUE, ...
+        NumReceiveAntennas   = numRxAntUE, ...
+        ReceiveGain          = 11, ...
+        PHYAbstractionMethod = phyAbstractionType);
+end
+
+%% 5) 链接 UE & FullBuffer DL 业务（单连接：每个 UE 只连一个 gNB）
+rlcBearer = nrRLCBearerConfig(SNFieldLength=6, BucketSizeDuration=10);
+
+for cellIdx = 1:numCells
+    if isempty(UEs{cellIdx})
+        continue;
+    end
+    connectUE(gNBs(cellIdx), UEs{cellIdx}, ...
+        RLCBearerConfig      = rlcBearer, ...
+        FullBufferTraffic    = "DL", ...
+        CSIReportPeriodicity = 10);
+end
+
+%% 6) 加入模拟器
+addNodes(networkSimulator, gNBs);
+for cellIdx = 1:numCells
+    if ~isempty(UEs{cellIdx})
+        addNodes(networkSimulator, UEs{cellIdx});
+    end
+end
+
+%% 7) 3GPP 38.901 UMi 信道（5G 小小区风格）
+% 所有 UE 展开成一个向量
+allUEs = [UEs{:}];
+
+posGNB = reshape([gNBs.Position],3,[]);
+if isempty(allUEs)
+    error("没有 UE，检查 UE 生成逻辑。");
+end
+posUE  = reshape([allUEs.Position],3,[]);
+pos    = [posGNB posUE];
+
+minX = min(pos(1,:));
+minY = min(pos(2,:));
+width  = max(pos(1,:)) - minX;
+height = max(pos(2,:)) - minY;
+
+% 使用 UMi，更贴合论文中 5G urban micro 描述
+channel = h38901Channel(Scenario="UMi",ScenarioExtents=[minX minY width height]);
+addChannelModel(networkSimulator,@channel.channelFunction);
+connectNodes(channel,networkSimulator);
+
+%% 8) Trace & 可视化
+enableTraces = true;
+linkDir      = 0;
+numMetricPlotUpdates = 20;
+
+if enableTraces
+    simSchedulingLogger = cell(numCells,1);
+    simPhyLogger        = cell(numCells,1);
+    for cellIdx = 1:numCells
+        if isempty(UEs{cellIdx})
+            simSchedulingLogger{cellIdx} = [];
+            simPhyLogger{cellIdx}        = [];
+            continue;
+        end
+
+        simSchedulingLogger{cellIdx} = helperNRSchedulingLogger( ...
+            numFrameSimulation, gNBs(cellIdx), UEs{cellIdx}, LinkDirection=linkDir);
+
+        simPhyLogger{cellIdx}        = helperNRPhyLogger( ...
+            numFrameSimulation, gNBs(cellIdx), UEs{cellIdx});
+    end
+end
+
+% 对宏小区做 KPI 可视化
+metricsVisualizer = helperNRMetricsVisualizer( ...
+    gNBs(gNBOfInterestIdx), UEs{gNBOfInterestIdx}, ...
+    CellOfInterest       = gNBs(gNBOfInterestIdx).ID, ...
+    RefreshRate          = numMetricPlotUpdates, ...
+    PlotSchedulerMetrics = true, ...
+    PlotPhyMetrics       = true, ...
+    PlotCDFMetrics       = true, ...
+    LinkDirection        = linkDir);
+
+networkVisualizer = helperNetworkVisualizer(SampleRate=5);
+
+% showBoundaries 只能给一个半径，这里用宏小区半径看看大致拓扑
+showBoundaries(networkVisualizer, gNBPositions, macroRadius, gNBOfInterestIdx);
+
+% ==== 额外画一个静态布局图，清楚显示宏/微覆盖关系 ====
+figure; hold on; axis equal;
+title("Macro + Small Cell Layout (3.5 GHz Macro, 30 GHz Small)");
+xlabel("X (m)"); ylabel("Y (m)");
+
+% 画宏小区覆盖（大圆）
+drawCircle(gNBPositions(1,1:2), macroRadius, "--");
+scatter(gNBPositions(1,1), gNBPositions(1,2), 80, "r", "filled");
+
+% 画微小区覆盖（小圆）
+for i = 2:numCells
+    drawCircle(gNBPositions(i,1:2), smallRadius, ":");
+    scatter(gNBPositions(i,1), gNBPositions(i,2), 60, "b", "filled");
+end
+
+legend("Macro coverage","Macro gNB","Small coverage","Small gNB");
+
+%% 9) 运行仿真
+simulationTime = numFrameSimulation * 1e-2;
+fprintf("开始仿真：%.2f 秒...\n", simulationTime);
+run(networkSimulator, simulationTime);
+fprintf("仿真结束。\n");
+
+%% 10) KPI 输出
+gNBStats = statistics(gNBs);
+ueStats  = cell(numCells,1);
+for cellIdx = 1:numCells
+    if ~isempty(UEs{cellIdx})
+        ueStats{cellIdx} = statistics(UEs{cellIdx});
+    else
+        ueStats{cellIdx} = [];
+    end
+end
+displayPerformanceIndicators(metricsVisualizer);
+
+%% 11) 保存日志
+simulationLogFile = "oranSimulationLogs_MultiCell_MUMIMO_RICsingle";
+if enableTraces
+    simulationLogs = cell(numCells,1);
+    for cellIdx = 1:numCells
+        if isempty(UEs{cellIdx}) || isempty(simSchedulingLogger{cellIdx})
+            simulationLogs{cellIdx} = [];
+            continue;
+        end
+
+        if gNBs(cellIdx).DuplexMode == "FDD"
+            logInfo = struct(NCellID=[],DLTimeStepLogs=[],ULTimeStepLogs=[],...
+                             SchedulingAssignmentLogs=[],PhyReceptionLogs=[]);
+            [logInfo.DLTimeStepLogs,logInfo.ULTimeStepLogs] = ...
+                getSchedulingLogs(simSchedulingLogger{cellIdx});
+        else
+            logInfo = struct(NCellID=[],TimeStepLogs=[],...
+                             SchedulingAssignmentLogs=[],PhyReceptionLogs=[], ...
+                             DLTimeStepLogs=[],ULTimeStepLogs=[]); % 兼容结构
+            logInfo.TimeStepLogs = getSchedulingLogs(simSchedulingLogger{cellIdx});
+        end
+        logInfo.NCellID = gNBs(cellIdx).ID;
+        logInfo.SchedulingAssignmentLogs = getGrantLogs(simSchedulingLogger{cellIdx});
+        logInfo.PhyReceptionLogs        = getReceptionLogs(simPhyLogger{cellIdx});
+        simulationLogs{cellIdx} = logInfo;
+    end
+    save(simulationLogFile,"simulationLogs","gNBStats","ueStats");
+    fprintf("仿真日志已保存到 %s.mat\n", simulationLogFile);
+end
+
+%% =============== 本地函数 ===============
+
+function targetCell = RIC_steering(uePos2D, distSmall, smallIdx, smallRadius)
+% RIC_steering
+%   当前是非常简单的"基线策略"：若在小小区覆盖内，则连最近的小小区；否则连宏。
+%   将来你可以把这里改成：
+%       - 基于 RSRP/SINR 的决策
+%       - 基于负载均衡的 traffic steering
+%       - 调用外部 RIC/xApp（比如通过文件/socket）得到决策
+
+    % 简单 auto 策略
+    [minD, localIdx] = min(distSmall);
+    nearestSmall = smallIdx(localIdx);
+
+    if minD <= smallRadius
+        targetCell = nearestSmall;
+    else
+        targetCell = 1;   % 宏小区
+    end
+end
+
+function drawCircle(center, radius, lineStyle)
+% 用基本 plot 画一个圆（不依赖额外 toolbox）
+t = linspace(0, 2*pi, 200);
+x = center(1) + radius*cos(t);
+y = center(2) + radius*sin(t);
+plot(x, y, lineStyle, "LineWidth", 1.0);
+end

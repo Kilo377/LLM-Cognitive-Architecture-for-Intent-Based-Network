@@ -1,0 +1,215 @@
+当前 oranSim.m 中的主要可调参数说明
+
+一、仿真控制类参数
+
+numFrameSimulation = 500
+含义：仿真帧数（每帧 10 ms），这里是 500 帧 ≈ 5 秒。
+影响：越大仿真时间越长，统计更稳定但耗时增加。
+
+simulationTime = numFrameSimulation * 1e-2
+含义：仿真总时长（秒）。一般跟随 numFrameSimulation 自动计算。
+
+enableTraces = true
+含义：是否开启调度和物理层日志记录。
+影响：true 会生成详细日志，但会增加仿真时间和内存开销。
+
+linkDir = 0
+含义：链路方向，0 表示下行 DL，1 表示上行 UL。
+影响：metricsVisualizer 展示哪一方向的性能指标。
+
+numMetricPlotUpdates = 20
+含义：KPI 曲线刷新频率（每多少个 TTI 更新一次）。
+
+二、拓扑 / 布局类参数
+
+numMacro = 1
+含义：宏小区 gNB 数量。
+
+numSmall = 4
+含义：微小区 gNB 数量。
+
+numCells = numMacro + numSmall
+含义：系统中小区总数。
+
+macroPos = [0 0 30]
+含义：宏 gNB 的位置坐标 (x, y, z)，这里在原点，高度 30 m。
+
+macroRadius = 500
+含义：宏小区覆盖半径，用于 UE 随机位置生成和画拓扑图。
+
+smallAttachRadius = 200
+含义：微小区“有效覆盖半径”。
+用途：
+
+RIC_selectServingCell 中判断 UE 是否连微小区的距离阈值。
+
+拓扑可视化中画出微小区覆盖圈的半径。
+
+smallRad = macroRadius - smallAttachRadius
+含义：微 gNB 到宏 gNB 的水平距离（环形分布的半径）。
+这里为 300 m，使微小区覆盖圈完全被宏小区覆盖，并减少微小区之间重叠。
+
+smallHeight = 10
+含义：微 gNB 的高度（z 坐标）。
+
+numUEsTotal = 60
+含义：系统中的 UE 总数。
+
+ueHeight = 1.5
+含义：UE 的高度（z 坐标）。
+
+UE 位置生成：
+使用 generateUEPositionsInMacro(macroRadius, macroPos, ueHeight, numUEsTotal)
+含义：在宏小区圆形区域内均匀随机生成 UE 位置。
+影响：宏小区半径越大，UE 分布区域越大，平均到基站的距离越远。
+
+三、PHY / 链路级参数
+
+phyAbstractionType = "linkToSystemMapping"
+含义：物理层抽象方式，使用链路到系统映射。
+影响：决定如何由链路级性能映射到系统级速率。
+
+duplexType = "FDD"
+含义：双工模式，当前为 FDD。也可以设置为 TDD。
+
+csiMeasurementSignalDLType = "CSI-RS"
+含义：下行 CSI 测量信号类型，可选 "CSI-RS" 或 "SRS"。
+影响：调度器获取 CSI 的方式，以及 MU-MIMO 配置中的 MinSINR 是否使用。
+
+宏小区载波和功率（在 gNBs 创建循环中 i == 1 时）：
+carrierFreq = 3.5e9
+宏 gNB 载波频率：3.5 GHz（Sub-6）。
+chanBW = 60e6
+宏 gNB 带宽：60 MHz。
+txPow = 43
+宏 gNB 发射功率：43 dBm。
+
+微小区载波和功率（i > 1 时）：
+carrierFreq = 30e9
+微 gNB 载波频率：30 GHz（毫米波）。
+chanBW = 60e6
+微 gNB 带宽：60 MHz。
+txPow = 38
+微 gNB 发射功率：38 dBm。
+
+SubcarrierSpacing = 30e3
+含义：子载波间隔 30 kHz。
+影响：OFDM 符号时长、RB 配置、频率选择性等。
+
+numTxAntGNB = 16
+含义：每个 gNB 的发射天线数（MIMO 维度）。
+
+numRxAntGNB = 16
+含义：每个 gNB 的接收天线数。
+
+UE 天线配置（在 nrUE 创建时）：
+NumTransmitAntennas = 4
+NumReceiveAntennas = 4
+含义：每个 UE 的发射/接收天线数。
+
+ReceiveGain = 11
+含义：gNB 和 UE 的接收增益。
+
+四、调度 / MU-MIMO 参数
+
+allocationType = 0
+含义：资源分配类型，0 表示按 RBG 分配。
+
+muMIMOConfiguration 结构体：
+MaxNumUsersPaired = 2
+含义：单个时隙中被 MU-MIMO 配对的最大用户数。
+MaxNumLayers = 8
+含义：总空间层数上限。
+MinNumRBs = 2
+含义：每个用户一次调度所占用的最小 RB 数。
+MinSINR = 10（仅当 csiMeasurementSignalDLType = "SRS" 时使用）
+含义：MU-MIMO 配对的最小 SINR 门限。
+
+MaxNumUsersPerTTI = 10（在 configureScheduler 中）
+含义：每个 TTI 中可调度的最大 UE 数量。
+
+五、信道模型参数
+
+channel = h38901Channel(Scenario="UMa", ScenarioExtents=[...])
+含义：使用 3GPP TR 38.901 的 UMa 城市宏场景信道模型。
+可调：
+
+Scenario（例如 UMa、UMi 等）
+
+ScenarioExtents（仿真区域大小）
+
+六、业务 / 流量模型参数
+
+业务类型数量分配：
+numVideo = 20
+numGaming = 15
+numVoice = 15
+numURLLC = 10
+
+含义：不同业务类型的 UE 数目。总和必须等于 numUEsTotal。
+影响：系统负载构成（视频占比、URLLC 占比等）。
+
+视频业务（Video）：
+videoDataRateKbps = 4000
+含义：目标数据率约 4 Mbps。
+videoPktSizeBytes = 1400
+含义：单包大小约 1400 字节。
+
+游戏业务（Gaming）：
+gamingDataRateKbps = 1000
+含义：目标数据率约 1 Mbps。
+gamingPktSizeBytes = 800
+含义：单包大小约 800 字节。
+
+URLLC 业务：
+urllcDataRateKbps = 2000
+含义：目标数据率约 2 Mbps。
+urllcPktSizeBytes = 100
+含义：单包大小约 100 字节，小包高频。
+
+Voice 业务：
+使用 networkTrafficVoIP：
+ExponentialMean = 20
+含义：控制 VoIP 语音的活跃/静音时长（平均值，单位 ms）。
+HasJitter = true
+含义：是否引入时延抖动。
+
+URLLC 的 On-Off 参数：
+OnExponentialMean = 1e-3
+OffExponentialMean = 1e-3
+含义：平均 On/Off 时长为 1 ms，用高频 On-Off 来近似 Poisson 小包到达。
+
+Video / Gaming 的 On-Off 模型：
+OnTime = simulationTime
+OffTime = 0
+含义：整个仿真期间始终处于 ON 状态，近似为持续业务流。
+
+七、RLC / 协议栈参数
+
+rlcBearer = nrRLCBearerConfig(SNFieldLength=6, BucketSizeDuration=10)
+含义：
+
+SNFieldLength：RLC 序列号长度。
+
+BucketSizeDuration：RLC 缓冲桶大小相关时间参数。
+影响：重传行为、缓冲区管理等。
+
+八、RIC / 初始小区选择策略参数
+
+smallAttachRadius（已在拓扑部分出现）
+在 RIC_selectServingCell 函数中：
+
+若 UE 到最近微小区的水平距离 bestDist < smallAttachRadius，则连接该微小区；
+
+否则连接宏小区（索引 1）。
+
+RIC_selectServingCell 中可扩展的决策逻辑：
+目前只使用 UE 位置和 smallAttachRadius 做“最近 + 阈值”选择。
+后续可以在此函数中加入：
+
+小区负载（用户数、RB 占用等）
+
+业务类型（Video / Gaming / Voice / URLLC）
+
+RL / DQN 的动作输出（例如选择宏或某个微小区）
+使其成为真正的 RIC 控制接口。

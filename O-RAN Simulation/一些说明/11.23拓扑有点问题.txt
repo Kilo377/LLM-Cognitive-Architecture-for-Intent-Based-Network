@@ -1,0 +1,227 @@
+%% oranSim.m
+% 多小区 NR 系统级仿真骨架（O-RAN 风格：多小区 + MIMO + MU-MIMO 调度）
+
+%% 0) 支持包检查 & 初始化
+wirelessnetworkSupportPackageCheck;
+rng("default");
+numFrameSimulation = 500;                     % 500帧 = 5秒
+networkSimulator  = wirelessNetworkSimulator.init;
+
+%% 1) PHY / MIMO / MU-MIMO 配置
+phyAbstractionType         = "linkToSystemMapping";
+duplexType                 = "FDD";
+csiMeasurementSignalDLType = "CSI-RS";        % 也可以改成 "SRS"
+
+% MU-MIMO 参数：SRS 和 CSI-RS 情况稍有不同
+if csiMeasurementSignalDLType == "SRS"
+    muMIMOConfiguration = struct( ...
+        MaxNumUsersPaired = 2, ...
+        MaxNumLayers      = 8, ...
+        MinNumRBs         = 2, ...
+        MinSINR           = 10);      % 只在 SRS 模式下有效
+else
+    muMIMOConfiguration = struct( ...
+        MaxNumUsersPaired = 2, ...
+        MaxNumLayers      = 8, ...
+        MinNumRBs         = 2);       % CSI-RS 模式不带 MinSINR，避免警告
+end
+
+allocationType = 0;
+
+tddConfig = struct(DLULPeriodicity=5,NumDLSlots=2,NumDLSymbols=12,...
+                   NumULSymbols=1,NumULSlots=2);
+
+%% 2) gNB 拓扑
+numMacro = 1;
+numSmall = 4;
+numCells = numMacro + numSmall;
+
+macroPos  = [0 0 30];
+smallRad  = 500;
+gNBPositions = zeros(numCells,3);
+gNBPositions(1,:) = macroPos;
+
+for i = 1:numSmall
+    angle = 2*pi*(i-1)/numSmall;
+    gNBPositions(1+i,:) = [smallRad*cos(angle), smallRad*sin(angle), 10];
+end
+
+gNBOfInterestIdx = 1;
+gNBNames = "gNB-" + (1:numCells);
+
+numTxAntGNB = 16;
+numRxAntGNB = 16;
+
+%% 3) 创建 gNB（在构造器里设置功率）
+gNBs = nrGNB.empty;
+for i = 1:numCells
+    if i == 1
+        txPow = 43;   % 宏站功率 43 dBm
+    else
+        txPow = 38;   % 小站功率 38 dBm
+    end
+
+    gNBs(i) = nrGNB( ...
+        Name                 = gNBNames(i), ...
+        Position             = gNBPositions(i,:), ...
+        CarrierFrequency     = 3.5e9, ...
+        ChannelBandwidth     = 20e6, ...
+        SubcarrierSpacing    = 30e3, ...
+        DuplexMode           = duplexType, ...
+        DLULConfigTDD        = tddConfig, ...
+        NumTransmitAntennas  = numTxAntGNB, ...
+        NumReceiveAntennas   = numRxAntGNB, ...
+        ReceiveGain          = 11, ...
+        TransmitPower        = txPow, ...
+        PHYAbstractionMethod = phyAbstractionType, ...
+        SRSPeriodicityUE     = 40);
+end
+
+% 调度器配置：启用 MU-MIMO 能力
+for g = 1:numCells
+    configureScheduler(gNBs(g), ...
+        ResourceAllocationType   = allocationType, ...
+        MaxNumUsersPerTTI        = 10, ...
+        MUMIMOConfigDL           = muMIMOConfiguration, ...
+        CSIMeasurementSignalDL   = csiMeasurementSignalDLType);
+end
+
+%% 4) UE 分配与创建
+cellRadius   = 500;
+numUEsTotal  = 60;
+numUEsPerCell = numUEsTotal / numCells;
+
+if mod(numUEsTotal, numCells) ~= 0
+    error("numUEsTotal 必须能被 numCells 整除！");
+end
+
+uePositions = generateUEPositions(cellRadius, gNBPositions, numUEsPerCell);
+
+numTxAntUE = 4;
+numRxAntUE = 4;
+
+UEs = cell(numCells,1);
+for cellIdx = 1:numCells
+    ueNames = "UE-" + (1:size(uePositions{cellIdx},1)) + "-Cell" + cellIdx;
+    UEs{cellIdx} = nrUE( ...
+        Name                 = ueNames, ...
+        Position             = uePositions{cellIdx}, ...
+        NumTransmitAntennas  = numTxAntUE, ...
+        NumReceiveAntennas   = numRxAntUE, ...
+        ReceiveGain          = 11, ...
+        PHYAbstractionMethod = phyAbstractionType);
+end
+
+%% 5) 链接 UE & FullBuffer DL 业务
+rlcBearer = nrRLCBearerConfig(SNFieldLength=6, BucketSizeDuration=10);
+
+for cellIdx = 1:numCells
+    connectUE(gNBs(cellIdx), UEs{cellIdx}, ...
+        RLCBearerConfig      = rlcBearer, ...
+        FullBufferTraffic    = "DL", ...
+        CSIReportPeriodicity = 10);
+end
+
+%% 6) 加入模拟器
+addNodes(networkSimulator, gNBs);
+for cellIdx = 1:numCells
+    addNodes(networkSimulator, UEs{cellIdx});
+end
+
+%% 7) 3GPP 38.901 UMa 信道
+% 把所有 UE 展开成一个向量
+allUEs = [UEs{:}];
+
+posGNB = reshape([gNBs.Position],3,[]);
+posUE  = reshape([allUEs.Position],3,[]);
+pos    = [posGNB posUE];
+
+minX = min(pos(1,:));
+minY = min(pos(2,:));
+width  = max(pos(1,:)) - minX;
+height = max(pos(2,:)) - minY;
+
+channel = h38901Channel(Scenario="UMa",ScenarioExtents=[minX minY width height]);
+addChannelModel(networkSimulator,@channel.channelFunction);
+connectNodes(channel,networkSimulator);
+
+%% 8) Trace & 可视化
+enableTraces = true;
+linkDir      = 0;
+numMetricPlotUpdates = 20;
+
+if enableTraces
+    simSchedulingLogger = cell(numCells,1);
+    simPhyLogger        = cell(numCells,1);
+    for cellIdx = 1:numCells
+        simSchedulingLogger{cellIdx} = helperNRSchedulingLogger( ...
+            numFrameSimulation, gNBs(cellIdx), UEs{cellIdx}, LinkDirection=linkDir);
+        simPhyLogger{cellIdx}        = helperNRPhyLogger( ...
+            numFrameSimulation, gNBs(cellIdx), UEs{cellIdx});
+    end
+end
+
+metricsVisualizer = helperNRMetricsVisualizer( ...
+    gNBs(gNBOfInterestIdx), UEs{gNBOfInterestIdx}, ...
+    CellOfInterest       = gNBs(gNBOfInterestIdx).ID, ...
+    RefreshRate          = numMetricPlotUpdates, ...
+    PlotSchedulerMetrics = true, ...
+    PlotPhyMetrics       = true, ...
+    PlotCDFMetrics       = true, ...
+    LinkDirection        = linkDir);
+
+networkVisualizer = helperNetworkVisualizer(SampleRate=5);
+showBoundaries(networkVisualizer, gNBPositions, cellRadius, gNBOfInterestIdx);
+
+%% 9) 运行仿真
+simulationTime = numFrameSimulation * 1e-2;
+fprintf("开始仿真：%.2f 秒...\n", simulationTime);
+run(networkSimulator, simulationTime);
+fprintf("仿真结束。\n");
+
+%% 10) KPI 输出
+gNBStats = statistics(gNBs);
+ueStats  = cell(numCells,1);
+for cellIdx = 1:numCells
+    ueStats{cellIdx} = statistics(UEs{cellIdx});
+end
+displayPerformanceIndicators(metricsVisualizer);
+
+%% 11) 保存日志
+simulationLogFile = "oranSimulationLogs_MultiCell_MUMIMO";
+if enableTraces
+    simulationLogs = cell(numCells,1);
+    for cellIdx = 1:numCells
+        if gNBs(cellIdx).DuplexMode == "FDD"
+            logInfo = struct(NCellID=[],DLTimeStepLogs=[],ULTimeStepLogs=[],...
+                             SchedulingAssignmentLogs=[],PhyReceptionLogs=[]);
+            [logInfo.DLTimeStepLogs,logInfo.ULTimeStepLogs] = ...
+                getSchedulingLogs(simSchedulingLogger{cellIdx});
+        else
+            logInfo = struct(NCellID=[],TimeStepLogs=[],...
+                             SchedulingAssignmentLogs=[],PhyReceptionLogs=[]);
+            logInfo.TimeStepLogs = getSchedulingLogs(simSchedulingLogger{cellIdx});
+        end
+        logInfo.NCellID = gNBs(cellIdx).ID;
+        logInfo.SchedulingAssignmentLogs = getGrantLogs(simSchedulingLogger{cellIdx});
+        logInfo.PhyReceptionLogs        = getReceptionLogs(simPhyLogger{cellIdx});
+        simulationLogs{cellIdx} = logInfo;
+    end
+    save(simulationLogFile,"simulationLogs","gNBStats","ueStats");
+    fprintf("仿真日志已保存到 %s.mat\n", simulationLogFile);
+end
+
+%% =============== 本文件用到的本地函数 ===============
+function uePositions = generateUEPositions(cellRadius,gNBPositions,numUEsPerCell)
+numCells = size(gNBPositions,1);
+uePositions = cell(numCells,1);
+ueHeight = 1.5;
+for c = 1:numCells
+    theta = rand(numUEsPerCell,1)*2*pi;
+    r     = sqrt(rand(numUEsPerCell,1))*cellRadius;
+    x     = gNBPositions(c,1) + r.*cos(theta);
+    y     = gNBPositions(c,2) + r.*sin(theta);
+    z     = ones(numUEsPerCell,1)*ueHeight;
+    uePositions{c} = [x y z];
+end
+end

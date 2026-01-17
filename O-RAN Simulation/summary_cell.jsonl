@@ -1,0 +1,15 @@
+{"time_sec":1,"cell_id":[1,2,3],"throughput_Mbps":[5.640544,0,0],"delay_ms":[999.99999999999909,5,5],"load_ratio":[1,0,0],"power_norm":[1,0.1,0.1],"energyEff_MbpsPerPower":[5.640544,0,0]}
+{"time_sec":1.5,"cell_id":[1,2,3],"throughput_Mbps":[5.682192,0,0.004944],"delay_ms":[999.99999999999909,5,5],"load_ratio":[1,0,0],"power_norm":[1,0.1,0.1],"energyEff_MbpsPerPower":[5.682192,0,0.049439999999999991]}
+{"time_sec":2,"cell_id":[1,2,3],"throughput_Mbps":[0.71568,0.0176,0.013824],"delay_ms":[25,7.1428571428571432,5.5555555555555554],"load_ratio":[0.6,0.3,0.1],"power_norm":[1,0.5,0.5],"energyEff_MbpsPerPower":[0.71568,0.0352,0.027648]}
+{"time_sec":1,"cell_id":[1,2,3],"throughput_Mbps":[0.4636,0,0],"delay_ms":[14.285714285714286,6.25,10],"load_ratio":[0.3,0.2,0.5],"power_norm":[1,0.5,0.5],"energyEff_MbpsPerPower":[0.4636,0,0]}
+{"time_sec":1.5,"cell_id":[1,2,3],"throughput_Mbps":[0.4636,0,0],"delay_ms":[14.285714285714286,7.1428571428571432,8.3333333333333339],"load_ratio":[0.3,0.3,0.4],"power_norm":[1,0.5,0.5],"energyEff_MbpsPerPower":[0.4636,0,0]}
+{"time_sec":2,"cell_id":[1,2,3],"throughput_Mbps":[2.009584,0.021712,0.004304],"delay_ms":[25,5,8.3333333333333339],"load_ratio":[0.6,0,0.4],"power_norm":[1,0.1,0.5],"energyEff_MbpsPerPower":[2.009584,0.21711999999999998,0.008608]}
+{"time_sec":1,"cell_id":[1,2,3],"throughput_Mbps":[0,0,0],"delay_ms":[33.333333333333329,5,7.1428571428571432],"load_ratio":[0.7,0,0.3],"power_norm":[1,0.1,0.5],"energyEff_MbpsPerPower":[0,0,0]}
+{"time_sec":1.5,"cell_id":[1,2,3],"throughput_Mbps":[0,0,0],"delay_ms":[14.285714285714286,5,16.666666666666664],"load_ratio":[0.3,0,0.7],"power_norm":[1,0.1,0.5],"energyEff_MbpsPerPower":[0,0,0]}
+{"time_sec":2,"cell_id":[1,2,3],"throughput_Mbps":[0.15624,0.00648,0.757408],"delay_ms":[16.666666666666668,5,12.5],"load_ratio":[0.4,0,0.6],"power_norm":[1,0.1,0.5],"energyEff_MbpsPerPower":[0.15624,0.0648,1.514816]}
+{"time_sec":1,"cell_id":[1,2,3],"throughput_Mbps":[3.747744,0,0],"delay_ms":[20,5.5555555555555554,8.3333333333333339],"load_ratio":[0.5,0.1,0.4],"power_norm":[1,0.5,0.5],"energyEff_MbpsPerPower":[3.747744,0,0]}
+{"time_sec":1.5,"cell_id":[1,2,3],"throughput_Mbps":[0.07992,0,0.009984],"delay_ms":[12.5,10,7.1428571428571432],"load_ratio":[0.2,0.5,0.3],"power_norm":[1,0.5,0.5],"energyEff_MbpsPerPower":[0.07992,0,0.019968]}
+{"time_sec":2,"cell_id":[1,2,3],"throughput_Mbps":[2.268288,0.16288,0.012288],"delay_ms":[20,10,5],"load_ratio":[0.5,0.5,0],"power_norm":[1,0.5,0.1],"energyEff_MbpsPerPower":[2.268288,0.32576,0.12288]}
+{"time_sec":1,"cell_id":[1,2,3],"throughput_Mbps":[0.33072,0,0],"delay_ms":[20,10,5],"load_ratio":[0.5,0.5,0],"power_norm":[1,0.5,0.1],"energyEff_MbpsPerPower":[0.33072,0,0]}
+{"time_sec":1.5,"cell_id":[1,2,3],"throughput_Mbps":[0.29536,0,0],"delay_ms":[25,8.3333333333333339,5],"load_ratio":[0.6,0.4,0],"power_norm":[1,0.5,0.1],"energyEff_MbpsPerPower":[0.29536,0,0]}
+{"time_sec":2,"cell_id":[1,2,3],"throughput_Mbps":[2.45264,0.006208,0.018496],"delay_ms":[20,7.1428571428571432,6.25],"load_ratio":[0.5,0.3,0.2],"power_norm":[1,0.5,0.5],"energyEff_MbpsPerPower":[2.45264,0.012416,0.036992]}

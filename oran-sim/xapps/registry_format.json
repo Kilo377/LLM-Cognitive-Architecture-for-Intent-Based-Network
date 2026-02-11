@@ -1,0 +1,27 @@
+{
+  "xapp_id": "mac_scheduler_urllc",
+  "xapp_name": "URLLC MAC Scheduler",
+  "xapp_version": "0.1",
+  "xapp_description": "Simple EDF-based URLLC MAC scheduling xApp",
+
+  "entry_point": "xapp_main",
+  "language": "matlab",
+  "execution_type": "periodic",
+
+  "control_parameters": [
+    {
+      "name": "selectedUE",
+      "type": "discrete",
+      "scope": "cell"
+    }
+  ],
+
+  "affected_kpis": [
+    {
+      "kpi_name": "urllc_latency",
+      "effect": "positive"
+    }
+  ],
+
+  "dependencies": []
+}

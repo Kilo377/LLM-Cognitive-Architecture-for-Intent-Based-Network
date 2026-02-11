@@ -1,0 +1,27 @@
+{
+  "xapp_id": "xapp_throughput_scheduler",
+  "xapp_name": "Throughput-Oriented Scheduler",
+  "xapp_version": "0.1",
+  "xapp_description": "Maximize cell throughput by selecting highest SINR UE",
+
+  "entry_point": "xapp_main",
+  "language": "matlab",
+  "execution_type": "periodic",
+
+  "control_parameters": [
+    {
+      "name": "selectedUE",
+      "type": "discrete",
+      "scope": "cell"
+    }
+  ],
+
+  "affected_kpis": [
+    {
+      "kpi_name": "throughput",
+      "effect": "positive"
+    }
+  ],
+
+  "dependencies": []
+}

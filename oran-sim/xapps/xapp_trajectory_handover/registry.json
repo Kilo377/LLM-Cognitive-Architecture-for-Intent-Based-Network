@@ -1,0 +1,31 @@
+{
+  "xapp_id": "xapp_trajectory_handover",
+  "xapp_name": "Trajectory-based Handover xApp",
+  "xapp_version": "0.1",
+  "xapp_description": "Adjust handover hysteresis based on UE mobility",
+
+  "entry_point": "xapp_main",
+  "language": "matlab",
+  "execution_type": "periodic",
+
+  "control_parameters": [
+    {
+      "name": "handover_hysteresis_offset_dB",
+      "type": "continuous",
+      "scope": "cell"
+    }
+  ],
+
+  "affected_kpis": [
+    {
+      "kpi_name": "handover_failure_rate",
+      "effect": "negative"
+    },
+    {
+      "kpi_name": "ping_pong_rate",
+      "effect": "negative"
+    }
+  ],
+
+  "dependencies": []
+}

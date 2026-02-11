@@ -105,7 +105,7 @@ PRB util per cell: 1.00 0.00 0.99 0.99
 已经完成了一个"可运行、PHY-aware、可扩展到 O-RAN 的系统级 5G RAN 仿真平台 baseline
 
 ---
-## 20260209Z
+## 20260209
 接下来优先设计状态总线, 根据建议, 底层网络的信息将会反馈只`RanStateBus.m`,
 由RIC, xApp读取.\
 这样形成了一个分离层
@@ -284,7 +284,19 @@ actions 按顺序合并
 当前, RIC的初步设计实现2个xApp的部署: 
 1. URLLC 调度 → 控制 scheduling.selectedUE
 2. Trajectory HO → 控制 handover.hysteresisOffset_dB
-来引入第三个产生冲突的xApp:
+
+## 20260211
+接下来暂时给near-RT的开了一个选择xApp集合的接口, 可以在`run_ric_mvp.m`里面
+根据xApp的名字选择装在的xApp
+```
+xAppSet = [
+        % "xapp_mac_scheduler_urllc_mvp"
+        % "xapp_trajectory_handover"
+        % "xapp_throughput_scheduler"
+    ];
+```
+
+接下来的目标是引入第三个产生冲突的xApp:
 两个 xApp 控制同一个 control 参数
 
 但目标 KPI 不同

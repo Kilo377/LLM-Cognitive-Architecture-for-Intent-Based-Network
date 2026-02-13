@@ -1,24 +1,19 @@
-function run_mvp_ric()
-%RUN_MVP_RIC
-% Experiment-level controller for near-RT RIC
+function result = run_mvp_ric()
+%RUN_MVP_RIC Quantitative experiment runner
 %
-% Responsibilities:
-% - Build config
-% - Select xApp set (experiment control)
-% - Create RIC
-% - Run simulation loop
-%
-% You only need to edit the xAppSet section below.
+% - Fixed slot experiment
+% - GitHub safe path handling
+% - Absolute xApp root
+% - Structured KPI output
 
     %% =========================================================
-    % Path setup
+    % Setup project path (robust, GitHub-safe)
     %% =========================================================
-    thisFile = mfilename('fullpath');
-    runDir   = fileparts(thisFile);
-    rootDir  = fileparts(runDir);
-    addpath(genpath(rootDir));
+    rootDir = setup_path();
 
-    fprintf('[RUN] MVP RIC start\n');
+    fprintf('\n============================\n');
+    fprintf('[RUN] Quantitative RIC experiment\n');
+    fprintf('============================\n');
 
     %% =========================================================
     % Config
@@ -30,21 +25,30 @@ function run_mvp_ric()
         cfg.nearRT.periodSlot = 10;
     end
 
-    %% =========================================================
-    % ======== 选择本次实验启用的 xApp 集合（只改这里） ========
-    %% =========================================================
+    % IMPORTANT: absolute xApp root
+    cfg.nearRT.xappRoot = fullfile(rootDir, "xapps");
 
+    %% =========================================================
+    % Fixed slot count experiment
+    %% =========================================================
+    totalSlot = 5000;
+    cfg.sim.slotPerEpisode = totalSlot;
+
+    %% =========================================================
+    % Select xApps (edit here)
+    %% =========================================================
     xAppSet = [
         % "xapp_mac_scheduler_urllc_mvp"
-        % "xapp_trajectory_handover"
+         "xapp_trajectory_handover"
         % "xapp_throughput_scheduler"
     ];
 
-    % 如果只想跑单个：
-    % xAppSet = "xapp_mac_scheduler_urllc_mvp";
-
-    fprintf('[RUN] Enabled xApps:\n');
-    disp(xAppSet);
+    if isempty(xAppSet)
+        fprintf('[RUN] Mode: BASELINE\n');
+    else
+        fprintf('[RUN] Enabled xApps:\n');
+        disp(xAppSet);
+    end
 
     %% =========================================================
     % Scenario + Kernel
@@ -53,81 +57,45 @@ function run_mvp_ric()
     ran = RanKernelNR(cfg, scenario);
 
     %% =========================================================
-    % near-RT RIC (直接带 xAppSet 初始化)
+    % RIC
     %% =========================================================
     ric = NearRTRIC(cfg, "xappSet", xAppSet);
 
     %% =========================================================
-    % Visualization
+    % Main loop
     %% =========================================================
-    viz = VisualizationManager();
-
-    %% =========================================================
-    % Simulation loop
-    %% =========================================================
-    totalSlot = cfg.sim.slotPerEpisode;
     lastAction = RanActionBus.init(cfg);
 
     for slot = 1:totalSlot
-
-        % near-RT step
-        [ric, action, info] = ric.step(ran.getState()); %#ok<ASGLU>
+        [ric, action] = ric.step(ran.getState());
         lastAction = action;
-
-        % RAN executes action
         ran = ran.stepWithAction(lastAction);
-
-        % visualization
-        viz.update(ran.getState());
-
-        %% ---- periodic print ----
-        if isfield(cfg,'nonRT') && isfield(cfg.nonRT,'periodSlot')
-            printEvery = cfg.nonRT.periodSlot;
-        else
-            printEvery = round(1 / cfg.sim.slotDuration);
-        end
-
-        if mod(slot, printEvery) == 0
-            s = ran.getState();
-            t = s.time.t_s;
-            thr = sum(s.kpi.throughputBitPerUE) / max(t,1e-9);
-
-            fprintf('[t=%.2fs] thr=%.2f Mbps, HO=%d, URLLCdrop=%d\n', ...
-                t, thr/1e6, ...
-                s.kpi.handoverCount, ...
-                s.kpi.dropURLLC);
-
-            % 打印当前 tick 使用的 xApp
-            if isfield(info,'xAppSources')
-                fprintf('  Active xApps: ');
-                disp(info.xAppSources);
-            end
-        end
-
-        if ~ishandle(viz.fig)
-            fprintf('[RUN] window closed, stop\n');
-            break;
-        end
-
-        pause(0.01);
     end
 
     %% =========================================================
-    % Final report
+    % Final KPI
     %% =========================================================
     report = ran.finalize();
 
-    fprintf('\n===== MVP RIC REPORT =====\n');
-    fprintf('Enabled xApps: \n');
-    disp(xAppSet);
+    totalTime = totalSlot * cfg.sim.slotDuration;
+    avgThroughput_Mbps = report.throughput_bps_total / totalTime / 1e6;
 
-    fprintf('Total throughput: %.2f Mbps\n', ...
-        report.throughput_bps_total/1e6);
-
+    fprintf('\n===== FINAL KPI REPORT =====\n');
+    fprintf('Sim duration: %.2f s\n', totalTime);
+    fprintf('Avg Throughput: %.2f Mbps\n', avgThroughput_Mbps);
     fprintf('HO count: %d\n', report.handover_count);
+    fprintf('Dropped total: %d\n', report.dropped_total);
+    fprintf('Dropped URLLC: %d\n', report.dropped_urllc);
+    fprintf('============================\n\n');
 
-    fprintf('Dropped packets: total=%d, URLLC=%d\n', ...
-        report.dropped_total, report.dropped_urllc);
-
-    fprintf('[RUN] MVP RIC finished\n');
+    %% =========================================================
+    % Return structured result
+    %% =========================================================
+    result = struct();
+    result.xAppSet = xAppSet;
+    result.simDuration_s = totalTime;
+    result.avgThroughput_Mbps = avgThroughput_Mbps;
+    result.handover_count = report.handover_count;
+    result.dropped_total = report.dropped_total;
+    result.dropped_urllc = report.dropped_urllc;
 end

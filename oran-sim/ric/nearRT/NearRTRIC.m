@@ -1,76 +1,63 @@
 classdef NearRTRIC
-%NEARRTRIC Time-driven near-RT RIC (Stable Version)
+%NEARRTRIC Time-driven near-RT RIC (Repo-safe Stable Version)
 %
 % ==============================================================
 % 角色定位
 % --------------------------------------------------------------
 % - near-RT RIC 负责：
-%     1) 周期性 tick 调度
-%     2) 运行已启用的 xApp 集合
-%     3) 合并 xApp 输出
-%     4) 映射为 RanActionBus
-%     5) 进行安全裁剪
+%   1) 周期 tick 调度
+%   2) 运行已启用的 xApp 集合
+%   3) 合并 xApp 输出 (ActionMerger)
+%   4) merged.control -> RanActionBus 映射
+%   5) ActionGuard 安全裁剪
 %
 % - non-RT (rApp) 负责：
-%     选择 enabledXApps 集合
-%     通过 setPolicy() 下发
+%   选择 enabledXApps 集合，通过 setPolicy() 下发
 %
-% - xApp：
-%     只输出 action.control
+% - xApp 负责：
+%   只输出 action.control.{key}
 %
+% ==============================================================
+% 关键工程约束（GitHub 复现）
+% --------------------------------------------------------------
+% - 不依赖 pwd
+% - xApp 根目录通过 cfg.nearRT.xappRoot 指定
+% - 若目录不存在，直接报错，避免 silent baseline
 % ==============================================================
 
     properties
-
-        %% ===========================
-        % Configuration
-        %% ===========================
         cfg
 
-        %% ===========================
-        % Tick control
-        %% ===========================
-        tickIntervalSlot      % near-RT 周期
-        nextTickSlot          % 下次触发 slot
+        % tick control
+        tickIntervalSlot
+        nextTickSlot
 
-        %% ===========================
-        % Policy (A1 semantics)
-        %% ===========================
-        policy                % 当前生效策略
-        policyStamp           % 当前策略版本
-        pendingPolicy         % 待切换策略
-        pendingPolicyStamp    % 待切换版本号
+        % policy
+        policy
+        policyStamp
+        pendingPolicy
+        pendingPolicyStamp
 
-        %% ===========================
-        % Adapters
-        %% ===========================
+        % adapters
         obsAdapter
         actionGuard
 
-        %% ===========================
-        % xApp related modules
-        %% ===========================
+        % xApp modules
         xappRoot
         xappRegistry
         xappManager
 
-        %% ===========================
-        % Action cache
-        %% ===========================
+        % action cache
         lastAction
         lastActionSlot
     end
 
-    %% ==========================================================
-    % Constructor
-    %% ==========================================================
     methods
-
         function obj = NearRTRIC(cfg, varargin)
-        % Constructor
-        %
-        % Optional:
-        %   NearRTRIC(cfg, "xappSet", ["xapp_a","xapp_b"])
+            % NearRTRIC(cfg, "xappSet", ["xapp_a","xapp_b"])
+            %
+            % cfg.nearRT.xappRoot 必须提供，建议使用绝对路径：
+            %   cfg.nearRT.xappRoot = fullfile(rootDir,"xapps");
 
             obj.cfg = cfg;
 
@@ -80,24 +67,20 @@ classdef NearRTRIC
             else
                 obj.tickIntervalSlot = 10;
             end
-
             obj.nextTickSlot = 1;
 
             %% ---------------- Core adapters ----------------
             obj.obsAdapter  = ObsAdapter(cfg);
             obj.actionGuard = ActionGuard(cfg);
 
+            %% ---------------- Cache ----------------
             obj.lastAction = RanActionBus.init(cfg);
             obj.lastActionSlot = 0;
 
-            %% ---------------- xApp root ----------------
-            if isfield(cfg,'nearRT') && isfield(cfg.nearRT,'xappRoot')
-                obj.xappRoot = string(cfg.nearRT.xappRoot);
-            else
-                obj.xappRoot = "xapps";
-            end
+            %% ---------------- Resolve xApp root ----------------
+            obj.xappRoot = obj.resolveXAppRoot(cfg);
 
-            %% ---------------- Load xApps ----------------
+            %% ---------------- Load registry ----------------
             obj.xappRegistry = XAppRegistry(char(obj.xappRoot));
             obj.xappRegistry.load();
 
@@ -129,10 +112,8 @@ classdef NearRTRIC
             end
         end
 
-        %% ==========================================================
-        % Policy update from non-RT
-        %% ==========================================================
         function obj = setPolicy(obj, newPolicy)
+            % Triggered policy update (A1-like semantics)
 
             if ~isstruct(newPolicy)
                 return;
@@ -144,14 +125,13 @@ classdef NearRTRIC
             obj.pendingPolicyStamp = obj.policyStamp + 1;
 
             if isfield(newPolicy,'enabledXApps')
-                fprintf('[near-RT RIC] policy update received (pending)\n');
+                fprintf('[near-RT RIC] policy update received: enabledXApps=%s (pending)\n', ...
+                    mat2str(string(newPolicy.enabledXApps)));
             end
         end
 
-        %% ==========================================================
-        % Main step (E2 semantics)
-        %% ==========================================================
         function [obj, action, info] = step(obj, state)
+            % E2-like semantics: run at tick slots
 
             slot = state.time.slot;
 
@@ -160,47 +140,46 @@ classdef NearRTRIC
             info.didTick = false;
             info.policyStamp = obj.policyStamp;
 
-            %% -------- Non-tick: reuse cache --------
+            %% non-tick -> cached action
             if slot < obj.nextTickSlot
                 action = obj.lastAction;
                 info.actionSource = "cache";
                 return;
             end
 
-            %% -------- Tick start --------
+            %% tick -> apply policy first
             obj = obj.applyPendingPolicyIfAny();
 
-            %% -------- Build observation --------
+            %% build obs
             obs = obj.obsAdapter.buildObs(state);
 
-            %% -------- Build unified input --------
+            %% build input
             ctx = struct();
             ctx.time = state.time;
             ctx.trigger = "periodic";
-
             input = InputBuilder(obs, obj.cfg, ctx);
 
-            %% -------- Run xApps --------
+            %% run enabled xApps
             actions = obj.xappManager.run(input, "periodic");
 
-            %% -------- Merge actions --------
+            %% merge
             merged = ActionMerger(actions);
 
-            %% -------- Map to RanActionBus --------
+            %% map merged.control -> RanActionBus
             rawAction = RanActionBus.init(obj.cfg);
             rawAction = obj.applyControl(rawAction, merged);
 
-            %% -------- Safety guard --------
+            %% guard
             action = obj.actionGuard.guard(rawAction, state);
 
-            %% -------- Cache update --------
+            %% update cache
             obj.lastAction = action;
             obj.lastActionSlot = slot;
 
-            %% -------- Update next tick --------
+            %% schedule next tick
             obj.nextTickSlot = slot + obj.tickIntervalSlot;
 
-            %% -------- Info --------
+            %% info
             info.didTick = true;
             info.actionSource = "xApps";
             info.policyStamp = obj.policyStamp;
@@ -213,12 +192,39 @@ classdef NearRTRIC
         end
     end
 
-    %% ==========================================================
-    % Internal helpers
-    %% ==========================================================
     methods (Access = private)
 
+        function xroot = resolveXAppRoot(obj, cfg)
+            % Resolve xApp root robustly (repo-safe)
+            %
+            % Priority:
+            % 1) cfg.nearRT.xappRoot
+            % 2) error (avoid silent baseline)
+
+            if ~(isfield(cfg,'nearRT') && isfield(cfg.nearRT,'xappRoot'))
+                error('NearRTRIC:MissingXAppRoot', ...
+                    'cfg.nearRT.xappRoot is required. Set it in run script (recommended absolute path).');
+            end
+
+            xroot = string(cfg.nearRT.xappRoot);
+
+            % If relative path, resolve relative to this class file directory
+            if ~isfolder(xroot)
+                baseDir = fileparts(mfilename('fullpath'));
+                cand = fullfile(baseDir, xroot);
+                if isfolder(cand)
+                    xroot = string(cand);
+                end
+            end
+
+            if ~isfolder(xroot)
+                error('NearRTRIC:XAppRootNotFound', ...
+                    'xApp root folder not found: %s', xroot);
+            end
+        end
+
         function obj = applyPendingPolicyIfAny(obj)
+            % Apply pending policy only at tick boundary
 
             if obj.pendingPolicyStamp <= obj.policyStamp
                 return;
@@ -233,6 +239,12 @@ classdef NearRTRIC
         end
 
         function newPolicy = normalizePolicy(obj, newPolicy)
+            % Normalize new policy format
+            %
+            % Supported:
+            % - newPolicy.enabledXApps
+            % Legacy:
+            % - newPolicy.selectedXApp
 
             if isfield(newPolicy,'enabledXApps')
                 newPolicy.enabledXApps = string(newPolicy.enabledXApps);
@@ -253,6 +265,7 @@ classdef NearRTRIC
         end
 
         function obj = applyXAppEnableList(obj, policy)
+            % Turn all xApps off, then turn on those in policy.enabledXApps
 
             for i = 1:numel(obj.xappManager.xapps)
                 obj.xappManager.xapps(i).status = "off";
@@ -270,8 +283,9 @@ classdef NearRTRIC
         end
 
         function rawAction = applyControl(obj, rawAction, merged)
+            % Map merged.control -> RanActionBus fields
 
-            if ~isstruct(merged) || ~isfield(merged,'control')
+            if ~isstruct(merged) || ~isfield(merged,'control') || ~isstruct(merged.control)
                 return;
             end
 
@@ -281,7 +295,6 @@ classdef NearRTRIC
             keys = fieldnames(control);
 
             for i = 1:numel(keys)
-
                 key = keys{i};
 
                 if isfield(map, key)
@@ -294,6 +307,7 @@ classdef NearRTRIC
         end
 
         function map = getControlMap(obj)
+            % Default mapping + allow cfg override
 
             map = struct();
             map.selectedUE = "scheduling.selectedUE";
@@ -308,6 +322,7 @@ classdef NearRTRIC
         end
 
         function s = setByPath(~, s, path, value)
+            % Set nested struct field by string path "a.b.c"
 
             parts = split(string(path), ".");
             parts = cellstr(parts);
@@ -322,16 +337,12 @@ classdef NearRTRIC
     end
 
     methods (Static, Access = private)
-
         function sub = setByPathInner(sub, parts, value)
-
             if numel(parts) == 1
                 sub.(parts{1}) = value;
                 return;
             end
-
             sub.(parts{1}) = NearRTRIC.setByPathInner(sub.(parts{1}), parts(2:end), value);
         end
     end
 end
-

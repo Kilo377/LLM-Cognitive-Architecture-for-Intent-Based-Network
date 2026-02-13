@@ -1,18 +1,13 @@
-function result = run_mvp_ric()
-%RUN_MVP_RIC Quantitative experiment runner
-%
-% - Fixed slot experiment
-% - GitHub safe path handling
-% - Absolute xApp root
-% - Structured KPI output
+function result = run_scenario_visual()
+%RUN_MVP_RIC_VISUAL Quantitative experiment with realtime visualization
 
     %% =========================================================
-    % Setup project path (robust, GitHub-safe)
+    % Setup path
     %% =========================================================
     rootDir = setup_path();
 
     fprintf('\n============================\n');
-    fprintf('[RUN] Quantitative RIC experiment\n');
+    fprintf('[RUN] Quantitative RIC experiment (Visual Mode)\n');
     fprintf('============================\n');
 
     %% =========================================================
@@ -25,22 +20,16 @@ function result = run_mvp_ric()
         cfg.nearRT.periodSlot = 10;
     end
 
-    % IMPORTANT: absolute xApp root
-    cfg.nearRT.xappRoot = fullfile(rootDir, "xapps");
+    cfg.nearRT.xappRoot = fullfile(rootDir,"xapps");
 
-    %% =========================================================
-    % Fixed slot count experiment
-    %% =========================================================
     totalSlot = 5000;
     cfg.sim.slotPerEpisode = totalSlot;
 
     %% =========================================================
-    % Select xApps (edit here)
+    % Select xApps
     %% =========================================================
     xAppSet = [
-        % "xapp_mac_scheduler_urllc_mvp"
-         %"xapp_trajectory_handover"
-        % "xapp_throughput_scheduler"
+        %"xapp_trajectory_handover"
     ];
 
     if isempty(xAppSet)
@@ -55,11 +44,17 @@ function result = run_mvp_ric()
     %% =========================================================
     scenario = ScenarioBuilder(cfg);
     ran = RanKernelNR(cfg, scenario);
+    ric = NearRTRIC(cfg, "xappSet", xAppSet);
 
     %% =========================================================
-    % RIC
+    % Visualization
     %% =========================================================
-    ric = NearRTRIC(cfg, "xappSet", xAppSet);
+    viz = VisualizationManager();
+
+    trajHistory = cell(cfg.scenario.numUE,1);
+    for u = 1:cfg.scenario.numUE
+        trajHistory{u} = [];
+    end
 
     %% =========================================================
     % Main loop
@@ -67,9 +62,28 @@ function result = run_mvp_ric()
     lastAction = RanActionBus.init(cfg);
 
     for slot = 1:totalSlot
+
+        % --- RIC step ---
         [ric, action] = ric.step(ran.getState());
         lastAction = action;
+
+        % --- RAN step ---
         ran = ran.stepWithAction(lastAction);
+
+        % --- 取当前状态 ---
+        state = ran.getState();
+
+        % --- 记录轨迹 ---
+        for u = 1:cfg.scenario.numUE
+            trajHistory{u}(end+1,:) = state.ue.pos(u,:);
+        end
+
+        % --- 扩展字段 ---
+        state.ext.trajHistory = trajHistory;
+        state.ext.handoverCount = state.kpi.handoverCount;
+
+        % --- 更新可视化 ---
+        viz.update(state);
     end
 
     %% =========================================================
@@ -89,7 +103,7 @@ function result = run_mvp_ric()
     fprintf('============================\n\n');
 
     %% =========================================================
-    % Return structured result
+    % Return result
     %% =========================================================
     result = struct();
     result.xAppSet = xAppSet;

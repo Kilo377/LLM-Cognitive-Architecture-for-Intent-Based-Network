@@ -105,7 +105,7 @@ PRB util per cell: 1.00 0.00 0.99 0.99
 已经完成了一个"可运行、PHY-aware、可扩展到 O-RAN 的系统级 5G RAN 仿真平台 baseline
 
 ---
-## 20260209Z
+## 20260209
 接下来优先设计状态总线, 根据建议, 底层网络的信息将会反馈只`RanStateBus.m`,
 由RIC, xApp读取.\
 这样形成了一个分离层
@@ -265,8 +265,10 @@ ric/
 2. 管理 xApp 开 / 关
 3. 顺序调用 xApp
 4. 收集每个 xApp 的 action
+
 接下XActionMerger:
-目标：把 XAppManager.run() 返回的 actions{} 合成一个 final_action。
+目标：只负责把多个 xApp 的 control 合成一个 control
+把 XAppManager.run() 返回的 actions{} 合成一个 final_action。
 暂时用这套:
 
 actions 按顺序合并
@@ -279,6 +281,43 @@ actions 按顺序合并
 
 空 action 直接跳过
 
-当前, RIC的初步设计实现2个xApp的部署.
-来引入第三个产生冲突的xApp
+当前, RIC的初步设计实现2个xApp的部署: 
+1. URLLC 调度 → 控制 scheduling.selectedUE
+2. Trajectory HO → 控制 handover.hysteresisOffset_dB
 
+## 20260211
+接下来暂时给near-RT的开了一个选择xApp集合的接口, 可以在`run_ric_mvp.m`里面
+根据xApp的名字选择装在的xApp
+```
+xAppSet = [
+        % "xapp_mac_scheduler_urllc_mvp"
+        % "xapp_trajectory_handover"
+        % "xapp_throughput_scheduler"
+    ];
+```
+
+## 20260213
+修复一个路径bug: 导致RIC检测不到xApp, 根目录下新增目录文件;
+
+另, 发现UE小区切换的xApp性能几乎没有, 分析后发现主要问题来自
+场景设计: UE移动速度太慢, 几乎不需要做切换, 因此优先修改UE移动模型:
+
+改动 `UEMobilityModel.m` 文件
+
+把当前"随机漂移模型"改成 Random Waypoint + 可分层速度 + 有边界。
+1. 已经在可视化上看到用户移动, 但是是否装载xApp, 似乎没有任何影响;
+2. 其次, Cell始终只有3个激活; 这是个疑点
+第一个问题, 是`RanKernelNR.m`的逻辑写死, 因此改为可切换的方案
+
+经过分析和改进, pipe可能是通的, 然而当前问题是: 
+hysteresis不一定会影响任何一个KPI
+问题在于性建模不够充分,
+
+
+## 20260215
+经过当前分析, 场景存在以下问题:
+1. 物理层建模不充分, 这影响了参数层的设计,
+2. RanKernelNR太冗余了, 不好修改, 可能要再次拆解
+
+接下来, 首先测试一下两个xApp的参数冲突, 再来调研文献, 确定
+设计的xApp, 以及控制的参数, 从而把整个仿真场景建立好;

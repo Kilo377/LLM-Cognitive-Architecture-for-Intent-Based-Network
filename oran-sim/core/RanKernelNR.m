@@ -53,6 +53,7 @@ classdef RanKernelNR
         hoHysteresis_dB
         hoTTT_slot
         hoTimer
+        currentHoHysteresis_dB
 
         %% ===== 本 slot 临时量（state bus 用）=====
         lastServedUEPerCell     % [numCell x 1]
@@ -180,7 +181,7 @@ classdef RanKernelNR
 
             %% 无线测量 + HO
             obj = obj.updateRadioMeasurements();
-            obj = obj.handoverBaseline();
+            obj = obj.handoverWithAction(action);
 
             %% action-aware 调度
             obj = obj.scheduleAndServeWithAction(action);
@@ -366,6 +367,61 @@ classdef RanKernelNR
         end
 
         %% =========================================================
+        % action-aware HO
+        %% =========================================================
+       function obj = handoverWithAction(obj, action)
+
+            numUE   = obj.cfg.scenario.numUE;
+            numCell = obj.cfg.scenario.numCell;
+        
+            %% ===== 默认 offset =====
+            hoOffset = zeros(numCell,1);
+        
+            %% ===== 读取 xApp 控制 =====
+            if ~isempty(action) && isfield(action,'handover') && ...
+                    isfield(action.handover,'hysteresisOffset_dB')
+                v = action.handover.hysteresisOffset_dB;
+                if isnumeric(v) && numel(v) == numCell
+                    hoOffset = v(:);
+                end
+            end
+
+        
+            %% ===== 当前 slot 实际 hysteresis（用于 state bus）=====
+            obj.currentHoHysteresis_dB = obj.hoHysteresis_dB + hoOffset;
+
+
+            %% ===== HO 判决 =====
+            for u = 1:numUE
+        
+                s = obj.servingCell(u);
+        
+                [bestRSRP, bestCell] = max(obj.rsrp_dBm(u,:));
+        
+                % 当前 serving cell 的 hysteresis
+                thr = obj.currentHoHysteresis_dB(s);
+        
+                if bestCell ~= s && ...
+                   (bestRSRP - obj.rsrp_dBm(u,s) >= thr)
+        
+                    obj.hoTimer(u) = obj.hoTimer(u) + 1;
+        
+                    if obj.hoTimer(u) >= obj.hoTTT_slot
+                        obj.servingCell(u) = bestCell;
+                        obj.hoTimer(u) = 0;
+                        obj.accHOCount = obj.accHOCount + 1;
+                    end
+        
+                else
+                    obj.hoTimer(u) = 0;
+                end
+            end
+        end
+
+
+
+
+        %% =========================================================
         % 能耗
         %% =========================================================
         function obj = updateEnergyBaseline(obj)
@@ -394,16 +450,19 @@ classdef RanKernelNR
 
             numUE   = obj.cfg.scenario.numUE;
             numCell = obj.cfg.scenario.numCell;
-
+        
             s = obj.state;
-
+        
+            %% 时间
             s.time.slot = obj.slot;
             s.time.t_s  = obj.slot * obj.dt;
-
+        
+            %% 拓扑
             s.topology.numUE   = numUE;
             s.topology.numCell = numCell;
             s.topology.gNBPos  = obj.scenario.topology.gNBPos;
-
+        
+            %% UE 状态
             s.ue.pos         = obj.uePos;
             s.ue.servingCell = obj.servingCell;
             s.ue.sinr_dB     = obj.sinr_dB;
@@ -411,42 +470,56 @@ classdef RanKernelNR
             s.ue.cqi         = obj.lastCQIPerUE;
             s.ue.mcs         = obj.lastMCSPerUE;
             s.ue.bler        = obj.lastBLERPerUE;
-
+        
+            %% 队列状态
             qSum = zeros(numUE,1);
             urg  = zeros(numUE,1);
-            minDL = inf(numUE,1);   % inf 表示该 UE 当前没有 deadline 包
-
+            minDL = inf(numUE,1);
+        
             for u = 1:numUE
                 q = obj.scenario.traffic.model.getQueue(u);
                 if isempty(q)
                     continue;
                 end
-            
-                % buffer 总量
+        
                 qSum(u) = sum([q.size]);
-            
-                % deadline 向量（单位：slot）
+        
                 d = [q.deadline];
-            
-                % urgent 计数（保持你原来的定义）
+        
                 urg(u) = sum(isfinite(d) & d <= 5);
-            
-                % 最小 deadline（EDF 关键输入）
+        
                 if any(isfinite(d))
                     minDL(u) = min(d(isfinite(d)));
                 end
             end
-            s.ue.buffer_bits = qSum;
-            s.ue.urgent_pkts = urg;
-            s.ue.minDeadline_slot = minDL;  % 新增字段
-
-            s.cell.prbTotal = obj.numPRB * ones(numCell,1);
-            s.cell.prbUsed  = obj.lastPRBUsedPerCell;
-            s.cell.prbUtil  = s.cell.prbUsed ./ max(s.cell.prbTotal,1);
-            s.cell.txPower_dBm = obj.txPowerCell_dBm * ones(numCell,1);
-            s.cell.energy_J    = obj.accEnergyJPerCell;
-            s.cell.sleepState  = zeros(numCell,1);
-
+        
+            s.ue.buffer_bits      = qSum;
+            s.ue.urgent_pkts      = urg;
+            s.ue.minDeadline_slot = minDL;
+        
+            %% Cell 状态
+            s.cell.prbTotal     = obj.numPRB * ones(numCell,1);
+            s.cell.prbUsed      = obj.lastPRBUsedPerCell;
+            s.cell.prbUtil      = s.cell.prbUsed ./ max(s.cell.prbTotal,1);
+            s.cell.txPower_dBm  = obj.txPowerCell_dBm * ones(numCell,1);
+            s.cell.energy_J     = obj.accEnergyJPerCell;
+            s.cell.sleepState   = zeros(numCell,1);
+        
+            %% ===== HO 参数可观测 =====
+            % 基线 hysteresis
+            s.cell.hoHysteresisBaseline_dB = ...
+                obj.hoHysteresis_dB * ones(numCell,1);
+        
+            % 当前 slot 实际生效 hysteresis（如果你实现了 action-aware HO）
+            if isprop(obj,'currentHoHysteresis_dB')
+                s.cell.hoHysteresisEffective_dB = ...
+                    obj.currentHoHysteresis_dB;
+            else
+                s.cell.hoHysteresisEffective_dB = ...
+                    obj.hoHysteresis_dB * ones(numCell,1);
+            end
+        
+            %% KPI
             s.kpi.throughputBitPerUE = obj.accThroughputBitPerUE;
             s.kpi.dropTotal          = obj.accDroppedTotal;
             s.kpi.dropURLLC          = obj.accDroppedURLLC;
@@ -454,9 +527,10 @@ classdef RanKernelNR
             s.kpi.energyJPerCell     = obj.accEnergyJPerCell;
             s.kpi.prbUtilPerCell     = ...
                 obj.accPRBUsedPerCell ./ max(obj.accPRBTotalPerCell,1);
-
+        
             obj.state = s;
         end
+
 
         %% =========================================================
         % SINR -> CQI 近似

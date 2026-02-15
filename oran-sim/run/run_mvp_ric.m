@@ -31,16 +31,16 @@ function result = run_mvp_ric()
     %% =========================================================
     % Fixed slot count experiment
     %% =========================================================
-    totalSlot = 5000;
+    totalSlot = 2 * 5000; %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%time
     cfg.sim.slotPerEpisode = totalSlot;
 
     %% =========================================================
     % Select xApps (edit here)
     %% =========================================================
     xAppSet = [
-        % "xapp_mac_scheduler_urllc_mvp"
+         %"xapp_fair_scheduler"
          %"xapp_trajectory_handover"
-        % "xapp_throughput_scheduler"
+         "xapp_throughput_scheduler"
     ];
 
     if isempty(xAppSet)
@@ -68,6 +68,7 @@ function result = run_mvp_ric()
 
     for slot = 1:totalSlot
         [ric, action] = ric.step(ran.getState());
+
         lastAction = action;
         ran = ran.stepWithAction(lastAction);
     end

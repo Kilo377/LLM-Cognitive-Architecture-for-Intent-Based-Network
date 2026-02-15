@@ -1,0 +1,35 @@
+{
+  "xapp_id": "xapp_fair_scheduler",
+  "xapp_name": "Fairness-Oriented Scheduler",
+  "xapp_version": "0.1",
+  "xapp_description": "Improve fairness by scheduling UE with largest buffer",
+
+  "entry_point": "xapp_main",
+  "language": "matlab",
+  "execution_type": "periodic",
+
+  "control_parameters": [
+    {
+      "name": "selectedUE",
+      "type": "discrete",
+      "scope": "cell"
+    }
+  ],
+
+  "affected_kpis": [
+    {
+      "kpi_name": "throughput",
+      "effect": "negative"
+    },
+    {
+      "kpi_name": "fairness",
+      "effect": "positive"
+    },
+    {
+      "kpi_name": "drop_rate",
+      "effect": "negative"
+    }
+  ],
+
+  "dependencies": []
+}

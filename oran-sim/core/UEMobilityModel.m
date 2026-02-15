@@ -86,10 +86,10 @@ classdef UEMobilityModel
             for i = 1:obj.numUE
                 if rand < p.Results.highSpeedRatio
                     % 高速 UE（例如车载）
-                    obj.speed(i) = 20 + 5*rand;  % 20–25 m/s
+                    obj.speed(i) = 200 + 5*rand;  % 20–25 m/s
                 else
                     % 低速 UE（例如行人）
-                    obj.speed(i) = 1 + 2*rand;   % 1–3 m/s
+                    obj.speed(i) = 10 + 2*rand;   % 1–3 m/s
                 end
             end
 

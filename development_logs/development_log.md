@@ -373,3 +373,51 @@ core/
 │
 └── ScenarioBuilder.m
 ```
+目前, 我们确定了
+1. 解耦NR后可以跑通; 
+2. 参数控制→KPI因果 链路已经打通, 
+
+
+我们需要追求更真实的模型, 从而实现真实仿真; 根据因果关系, 我们逐一对models进行升级, 耦合性低, 自变量优先, 耦合性强的, 因变量放后, 例如energy, 其次, 我们增加UE侧的真实性
+
+当前已经更新:
+```
+RanKernelNR
+    |
+    |-- ctx.nextSlot()
+    |
+    |-- MobilityModel
+    |-- TrafficModel
+    |-- RadioModel
+    |-- HandoverModel
+    |-- SchedulerPRBModel
+    |-- PhyServiceModel
+    |-- EnergyModelBS
+    |-- KPIModel
+    |
+    |-- StateModel -> RanStateBus
+```
+
+现有控制域
+
+scheduling
+
+power
+
+sleep
+
+handover
+
+beam
+
+新增增强控制域
+
+radio：频谱/带宽控制
+
+energy：能耗策略控制（如动态 P0 scaling）
+
+qos：调度权重控制
+
+rlf：RLF 参数控制
+
+beam：升级为可扩展结构

@@ -1,76 +1,118 @@
-
 classdef NrPhyMacAdapter
-%NRPHYMACADAPTER Minimal PHY/MAC adapter using 5G Toolbox abstractions
-%   - SINR -> CQI -> MCS
-%   - MCS + PRB -> TBS
-%   - BLER model
-%   - Output: successfully delivered bits
+%NRPHYMACADAPTER v2: PHY/MAC adapter with HARQ memory and improved BLER/TBS
+%
+% Inputs:
+%   schedInfo.ueId
+%   schedInfo.numPRB
+%   schedInfo.mcs (optional)
+%   radioMeas.sinr_dB
+%
+% Outputs:
+%   getServedBits(ueId): successfully delivered bits for this UE in this call
+%
+% Notes:
+%   - This is still a system-level abstraction.
+%   - It adds HARQ combining memory so repeated failures matter.
+%   - It uses a more realistic BLER shape per MCS.
 
     properties
         cfg
         numUE
         numCell
 
-        % PHY parameters
-        nLayers
+        % HARQ
         rvSequence
+        harqMaxTx                % max transmissions per TB
+        harqRound                % [numUE x 1] current HARQ round (1..harqMaxTx)
+        harqCombiningGain_dB     % [numUE x 1] accumulated combining gain
+        harqActive               % [numUE x 1] whether a TB is pending retransmission
 
-        % Runtime buffers
-        lastTBS_bits      % [numUE x 1]
-        lastBLER          % [numUE x 1]
+        % Cache
+        lastTBS_bits             % [numUE x 1]
+        lastBLER                 % [numUE x 1]
+        lastMCS                  % [numUE x 1]
     end
 
     methods
-        function obj = NrPhyMacAdapter(cfg, scenario)
+        function obj = NrPhyMacAdapter(cfg, scenario) %#ok<INUSD>
             obj.cfg     = cfg;
             obj.numUE   = cfg.scenario.numUE;
             obj.numCell = cfg.scenario.numCell;
 
-            % Assume single layer DL for now
-            obj.nLayers = 1;
             obj.rvSequence = [0 2 3 1];
+            obj.harqMaxTx  = 4;
+
+            obj.harqRound            = ones(obj.numUE,1);
+            obj.harqCombiningGain_dB = zeros(obj.numUE,1);
+            obj.harqActive           = false(obj.numUE,1);
 
             obj.lastTBS_bits = zeros(obj.numUE,1);
             obj.lastBLER     = zeros(obj.numUE,1);
+            obj.lastMCS      = zeros(obj.numUE,1);
         end
 
         function obj = step(obj, schedInfo, radioMeas)
-            %STEP One PHY/MAC step for one scheduled UE
-            %
-            % schedInfo:
-            %   .ueId
-            %   .numPRB
-            %   .mcs (optional, can be empty)
-            %
-            % radioMeas:
-            %   .sinr_dB
 
             u = schedInfo.ueId;
+            prb = schedInfo.numPRB;
+
             sinr_dB = radioMeas.sinr_dB;
 
             % 1) SINR -> CQI
             cqi = obj.sinrToCQI(sinr_dB);
 
-            % 2) CQI -> MCS
-            if isfield(schedInfo, 'mcs') && ~isempty(schedInfo.mcs)
+            % 2) CQI -> MCS (unless overridden)
+            if isfield(schedInfo,'mcs') && ~isempty(schedInfo.mcs)
                 mcs = schedInfo.mcs;
             else
                 mcs = obj.cqiToMCS(cqi);
             end
+            obj.lastMCS(u) = mcs;
 
-            % 3) MCS + PRB -> TBS
-            tbs_bits = obj.computeTBS(mcs, schedInfo.numPRB);
-
-            % 4) BLER estimation
-            bler = obj.estimateBLER(sinr_dB, mcs);
-
-            % Cache
+            % 3) TBS
+            tbs_bits = obj.computeTBS(mcs, prb);
             obj.lastTBS_bits(u) = tbs_bits;
-            obj.lastBLER(u)     = bler;
+
+            % 4) Effective SINR with HARQ combining
+            effSinr_dB = sinr_dB + obj.harqCombiningGain_dB(u);
+
+            % 5) BLER
+            bler = obj.estimateBLER(effSinr_dB, mcs);
+            obj.lastBLER(u) = bler;
+
+            % 6) Update HARQ state using a stochastic decode outcome
+            %    Decode success probability = 1 - BLER
+            success = (rand() > bler);
+
+            if success
+                % TB delivered. Reset HARQ memory.
+                obj.harqRound(u)            = 1;
+                obj.harqCombiningGain_dB(u) = 0;
+                obj.harqActive(u)           = false;
+            else
+                % TB not delivered. Start/continue HARQ.
+                obj.harqActive(u) = true;
+
+                if obj.harqRound(u) < obj.harqMaxTx
+                    obj.harqRound(u) = obj.harqRound(u) + 1;
+                    % Soft-combining gain. Approx 1.5~2 dB per extra round.
+                    obj.harqCombiningGain_dB(u) = obj.harqCombiningGain_dB(u) + 1.7;
+                else
+                    % HARQ failed after maxTx. Drop TB at PHY.
+                    % Reset state. Upper layers may see this as "no delivery".
+                    obj.harqRound(u)            = 1;
+                    obj.harqCombiningGain_dB(u) = 0;
+                    obj.harqActive(u)           = false;
+
+                    % Force extremely low delivery for this attempt
+                    % Keep lastBLER high so served bits becomes small.
+                    obj.lastBLER(u) = 1.0;
+                end
+            end
         end
 
         function bits = getServedBits(obj, ueId)
-            % Return successfully delivered bits
+            % Served bits for this scheduling opportunity
             bits = obj.lastTBS_bits(ueId) * (1 - obj.lastBLER(ueId));
         end
     end
@@ -78,53 +120,73 @@ classdef NrPhyMacAdapter
     methods (Access = private)
 
         function cqi = sinrToCQI(~, sinr_dB)
-            % Simple 3GPP-like mapping
-            % CQI 1~15
-
-            cqiTable = [-5, -2, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25];
-            cqi = find(sinr_dB < cqiTable, 1) - 1;
-            if isempty(cqi)
-                cqi = 15;
-            end
+            % A light-weight CQI mapping
+            th = [-6 -4 -2 0 2 4 6 8 10 12 14 16 18 20 22];
+            cqi = find(sinr_dB < th,1) - 1;
+            if isempty(cqi), cqi = 15; end
             cqi = max(min(cqi,15),1);
         end
 
         function mcs = cqiToMCS(~, cqi)
-            % Very standard mapping: MCS ~= CQI - 1
-            mcs = max(cqi - 1, 0);
+            % Keep it simple but more reasonable:
+            % map CQI 1..15 -> MCS 0..27 (cap)
+            mcs = round((cqi-1) * (27/14));
+            mcs = max(min(mcs,27),0);
         end
 
         function tbs_bits = computeTBS(~, mcs, numPRB)
-            % Wrapper of 5G Toolbox TBS calculation
+            % System-level TBS approximation
+            % Use MCS -> (Qm, R) table (rough 3GPP-like shape)
+            % numPRB -> REs -> bits
+            [Qm, R] = localMcsToModCod(mcs);
 
-            % Assumptions (baseline)
-            modOrderTable = [ ...
-                2 2 2 2 2 4 4 4 4 6 6 6 6 6 8 8 8 8 8 ...
-            ];
-            codeRateTable = [ ...
-                120 193 308 449 602 378 434 490 553 ...
-                616 466 517 567 616 666 719 772 822 873 ...
-            ] / 1024;
+            % RE per PRB per slot (DL), remove pilots/overheads
+            Nre = 12 * 14;
+            overhead = 0.25;
+            NreEff = floor(Nre * (1-overhead));
 
-            idx = min(mcs+1, numel(modOrderTable));
-            Qm  = modOrderTable(idx);
-            R   = codeRateTable(idx);
-
-            % Resource elements per PRB (approximate)
-            Nre = 12 * 14 * 0.75; % remove pilots
-
-            tbs_bits = floor(numPRB * Nre * Qm * R);
+            tbs_bits = floor(numPRB * NreEff * Qm * R);
+            tbs_bits = max(tbs_bits, 0);
         end
 
         function bler = estimateBLER(~, sinr_dB, mcs)
-            % Simple logistic BLER curve per MCS
-            % This is where you can later plug helperNR BLER curves
-
-            sinr_th = -5 + 1.5 * mcs;
-            k = 1.0;
+            % More realistic BLER family:
+            % Each MCS has a threshold and slope.
+            [sinr_th, k] = localBlerParams(mcs);
 
             bler = 1 ./ (1 + exp(k * (sinr_dB - sinr_th)));
-            bler = min(max(bler, 0), 1);
+            bler = min(max(bler,0),1);
         end
     end
+end
+
+function [Qm, R] = localMcsToModCod(mcs)
+% Rough mapping for system-level simulation
+% Qm: modulation order (2,4,6,8)
+% R : code rate (0..1)
+
+% Piecewise
+if mcs <= 4
+    Qm = 2;  R = 0.12 + 0.08*mcs;         % QPSK low rate
+elseif mcs <= 10
+    Qm = 2;  R = 0.45 + 0.03*(mcs-5);     % QPSK mid
+elseif mcs <= 17
+    Qm = 4;  R = 0.35 + 0.04*(mcs-11);    % 16QAM
+elseif mcs <= 23
+    Qm = 6;  R = 0.35 + 0.04*(mcs-18);    % 64QAM
+else
+    Qm = 8;  R = 0.45 + 0.03*(mcs-24);    % 256QAM
+end
+
+R = min(max(R, 0.05), 0.95);
+end
+
+function [sinr_th, k] = localBlerParams(mcs)
+% BLER curve parameters per MCS
+% sinr_th increases with MCS
+% slope k becomes slightly steeper with MCS
+
+sinr_th = -7 + 0.9*mcs;        % threshold trend
+k       = 0.9 + 0.02*mcs;      % slope trend
+k       = min(k, 1.6);
 end

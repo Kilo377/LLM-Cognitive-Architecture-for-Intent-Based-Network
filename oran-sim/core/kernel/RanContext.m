@@ -1,125 +1,172 @@
 classdef RanContext
-%RANCONTEXT Unified runtime state container for modular NR kernel
-%
-% All models read/write ctx.
-% Kernel only orchestrates pipeline.
-%
-% Persistent fields:
-%   - UE / cell state
-%   - KPI accumulators
-%   - HO states
-%
-% Per-slot fields stored in ctx.tmp
-%
+%RANCONTEXT Runtime state container for modular NR kernel
 
     properties
-        %% =========================================================
-        % Global / Static references
-        %% =========================================================
+        %% ===== Static =====
         cfg
         scenario
 
-        %% =========================================================
-        % Time
-        %% =========================================================
+        %% ===== Time =====
         slot
         dt
 
-        %% =========================================================
-        % UE state
-        %% =========================================================
-        uePos               % [numUE x 3]
-        servingCell         % [numUE x 1]
-        rsrp_dBm            % [numUE x numCell]
-        sinr_dB             % [numUE x 1]
+        %% ===== UE / Cell core state =====
+        uePos
+        servingCell
 
-        %% =========================================================
-        % HO state
-        %% =========================================================
-        hoTimer                     % [numUE x 1]
-        ueBlockedUntilSlot          % interruption end slot
-        uePostHoUntilSlot           % post-HO penalty window end
-        uePostHoSinrPenalty_dB      % current penalty value
+        rsrp_dBm
+        measRsrp_dBm
+        sinr_dB
 
-        %% =========================================================
-        % Scheduler state
-        %% =========================================================
-        rrPtr                       % per-cell round-robin pointer
-
-        %% =========================================================
-        % Radio / cell parameters
-        %% =========================================================
+        %% ===== Radio parameters =====
+        bandwidthHz
+        scs
         numPRB
         txPowerCell_dBm
-        bandwidthHz
+        noiseFigure_dB
+        thermalNoise_dBm
 
-        %% =========================================================
-        % Energy parameters
-        %% =========================================================
-        P0_W
-        k_pa
+        %% ===== HO state =====
+        hoTimer
+        ueBlockedUntilSlot
+        uePostHoUntilSlot
+        uePostHoSinrPenalty_dB
 
-        %% =========================================================
-        % KPI accumulators (persistent)
-        %% =========================================================
+        lastHoFromCell
+        lastHoSlot
+
+        %% ===== RLF state =====
+        ueInOutageUntilSlot
+        lastRlfFromCell
+        lastRlfSlot
+        rlfTimer
+
+        %% ===== Scheduler state =====
+        rrPtr
+
+        %% ===== Traffic / throughput accumulators =====
         accThroughputBitPerUE
-        accPRBUsedPerCell
-        accPRBTotalPerCell
-        accHOCount
         accDroppedTotal
         accDroppedURLLC
-        accEnergyJPerCell
 
-        %% =========================================================
-        % Control
-        %% =========================================================
+        %% ===== PRB accumulators =====
+        accPRBUsedPerCell
+        accPRBTotalPerCell
+
+        %% ===== Energy accumulators =====
+        accEnergyJPerCell
+        accEnergySignal_J_total
+
+        %% ===== HO / RLF accumulators =====
+        accHOCount
+        accPingPongCount
+        accRLFCount
+
+        %% ===== Action bus =====
         action
 
-        %% =========================================================
-        % Per-slot temporary data
-        %% =========================================================
+        %% ===== Temporary per-slot scratch =====
         tmp
+
+        state
+
     end
 
     methods
 
-        %% =========================================================
-        % Constructor
-        %% =========================================================
-        function obj = RanContext()
+        function obj = RanContext(cfg, scenario)
+
+            obj.cfg      = cfg;
+            obj.scenario = scenario;
+
+            numUE   = cfg.scenario.numUE;
+            numCell = cfg.scenario.numCell;
+
+            %% ===== Time =====
+            obj.slot = 0;
+            obj.dt   = cfg.sim.slotDuration;
+
+            %% ===== UE / Cell =====
+            obj.uePos       = scenario.topology.ueInitPos;
+            obj.servingCell = ones(numUE,1);
+
+            obj.rsrp_dBm     = zeros(numUE,numCell);
+            obj.measRsrp_dBm = zeros(numUE,numCell);
+            obj.sinr_dB      = zeros(numUE,1);
+
+            %% ===== Radio parameters =====
+            obj.bandwidthHz = scenario.radio.bandwidth;
+            obj.scs         = scenario.radio.scs;
+
+            % PRB derivation (approx)
+            obj.numPRB = 106; % 可以后续改成公式计算
+
+            obj.txPowerCell_dBm = scenario.radio.txPower.cell;
+
+            obj.noiseFigure_dB = 7;  % typical UE NF
+
+            % Thermal noise calculation
+            obj.thermalNoise_dBm = ...
+                -174 + 10*log10(obj.bandwidthHz) + obj.noiseFigure_dB;
+
+            %% ===== HO state =====
+            obj.hoTimer                 = zeros(numUE,1);
+            obj.ueBlockedUntilSlot      = zeros(numUE,1);
+            obj.uePostHoUntilSlot       = zeros(numUE,1);
+            obj.uePostHoSinrPenalty_dB  = zeros(numUE,1);
+
+            obj.lastHoFromCell = zeros(numUE,1);
+            obj.lastHoSlot     = -inf(numUE,1);
+
+            %% ===== RLF state =====
+            obj.ueInOutageUntilSlot = zeros(numUE,1);
+            obj.lastRlfFromCell     = zeros(numUE,1);
+            obj.lastRlfSlot         = -inf(numUE,1);
+            obj.rlfTimer            = zeros(numUE,1);
+
+            %% ===== Scheduler =====
+            obj.rrPtr = ones(numCell,1);
+
+            %% ===== KPI accumulators =====
+            obj.accThroughputBitPerUE = zeros(numUE,1);
+
+            obj.accDroppedTotal = 0;
+            obj.accDroppedURLLC = 0;
+
+            obj.accPRBUsedPerCell  = zeros(numCell,1);
+            obj.accPRBTotalPerCell = zeros(numCell,1);
+
+            obj.accEnergyJPerCell       = zeros(numCell,1);
+            obj.accEnergySignal_J_total = 0;
+
+            obj.accHOCount       = 0;
+            obj.accPingPongCount = 0;
+            obj.accRLFCount      = 0;
+
+            %% ===== Action =====
+            obj.action = [];
+
+            %% ===== Temp =====
             obj.tmp = struct();
+
+            
+            obj.state = RanStateBus.init(cfg);
+
         end
 
-        %% =========================================================
-        % Clear per-slot temporary data
-        %% =========================================================
-        function obj = clearSlotTemp(obj)
+        %% ===============================
+        % Advance slot
+        %% ===============================
+        function obj = nextSlot(obj)
+            obj.slot = obj.slot + 1;
+            obj.tmp  = struct();
+        end
 
-            % Reset temp container
-            obj.tmp = struct();
-
-            % PHY feedback buffers
-            obj.tmp.lastCQIPerUE  = zeros(obj.cfg.scenario.numUE,1);
-            obj.tmp.lastMCSPerUE  = zeros(obj.cfg.scenario.numUE,1);
-            obj.tmp.lastBLERPerUE = zeros(obj.cfg.scenario.numUE,1);
-
-            obj.tmp.lastPRBUsedPerCell = ...
-                zeros(obj.cfg.scenario.numCell,1);
-
-            % Scheduler output placeholders
-            obj.tmp.scheduledUE = ...
-                cell(obj.cfg.scenario.numCell,1);
-
-            obj.tmp.prbAlloc = ...
-                cell(obj.cfg.scenario.numCell,1);
-
-            % Event container
-            obj.tmp.events = struct();
-            obj.tmp.events.hoOccured  = false;
-            obj.tmp.events.lastHOue   = 0;
-            obj.tmp.events.lastHOfrom = 0;
-            obj.tmp.events.lastHOto   = 0;
-
+        %% ===============================
+        % Apply action
+        %% ===============================
+        function obj = setAction(obj, action)
+            obj.action = action;
         end
     end
 end

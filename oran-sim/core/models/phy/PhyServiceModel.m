@@ -1,4 +1,24 @@
 classdef PhyServiceModel
+%PHYSERVICEMODEL
+%
+% Responsibilities:
+%   - Iterate per cell scheduled UE list
+%   - Call NrPhyMacAdapter
+%   - Serve traffic queue
+%   - Update throughput / PRB usage
+%   - Provide per-slot served bits for PF scheduler
+%
+% Inputs (from ctx.tmp):
+%   scheduledUE{c}
+%   prbAlloc{c}
+%
+% Outputs (to ctx.tmp):
+%   lastCQIPerUE
+%   lastMCSPerUE
+%   lastBLERPerUE
+%   lastPRBUsedPerCell
+%   lastServedBitsPerUE
+
     properties
         phyMac
     end
@@ -13,80 +33,111 @@ classdef PhyServiceModel
             numCell = ctx.cfg.scenario.numCell;
             numUE   = ctx.cfg.scenario.numUE;
 
-            % Ensure tmp fields exist (normally created by ctx.clearSlotTemp)
-            if ~isfield(ctx.tmp,'lastCQIPerUE'),  ctx.tmp.lastCQIPerUE  = zeros(numUE,1); end
-            if ~isfield(ctx.tmp,'lastMCSPerUE'),  ctx.tmp.lastMCSPerUE  = zeros(numUE,1); end
-            if ~isfield(ctx.tmp,'lastBLERPerUE'), ctx.tmp.lastBLERPerUE = zeros(numUE,1); end
-            if ~isfield(ctx.tmp,'lastPRBUsedPerCell'), ctx.tmp.lastPRBUsedPerCell = zeros(numCell,1); end
+            %% ===============================
+            % Initialize per-slot tmp fields
+            %% ===============================
 
-            % Scheduler outputs must exist
-            if ~isfield(ctx.tmp,'scheduledUE') || ~isfield(ctx.tmp,'prbAlloc')
-                return;
+            if ~isfield(ctx.tmp,'lastCQIPerUE')
+                ctx.tmp.lastCQIPerUE = zeros(numUE,1);
             end
+            if ~isfield(ctx.tmp,'lastMCSPerUE')
+                ctx.tmp.lastMCSPerUE = zeros(numUE,1);
+            end
+            if ~isfield(ctx.tmp,'lastBLERPerUE')
+                ctx.tmp.lastBLERPerUE = zeros(numUE,1);
+            end
+            if ~isfield(ctx.tmp,'lastPRBUsedPerCell')
+                ctx.tmp.lastPRBUsedPerCell = zeros(numCell,1);
+            end
+            if ~isfield(ctx.tmp,'lastServedBitsPerUE')
+                ctx.tmp.lastServedBitsPerUE = zeros(numUE,1);
+            end
+
+            %% ===============================
+            % Loop over cells
+            %% ===============================
 
             for c = 1:numCell
 
-                ueList = ctx.tmp.scheduledUE{c};
-                if isempty(ueList)
+                if ~isfield(ctx.tmp,'scheduledUE') || ...
+                   isempty(ctx.tmp.scheduledUE{c})
                     continue;
                 end
 
+                ueList  = ctx.tmp.scheduledUE{c};
                 prbList = ctx.tmp.prbAlloc{c};
-                if isempty(prbList)
-                    continue;
-                end
 
-                % Make lengths consistent
-                n = min(numel(ueList), numel(prbList));
-                ueList  = ueList(1:n);
-                prbList = prbList(1:n);
+                for i = 1:numel(ueList)
 
-                for i = 1:n
                     u   = ueList(i);
                     prb = prbList(i);
 
-                    if u <= 0 || u > numUE || prb <= 0
+                    if u <= 0 || prb <= 0
                         continue;
                     end
 
-                    % PRB accounting: allocated PRB is consumed regardless of success
-                    ctx.accPRBUsedPerCell(c) = ctx.accPRBUsedPerCell(c) + prb;
-                    ctx.tmp.lastPRBUsedPerCell(c) = ctx.tmp.lastPRBUsedPerCell(c) + prb;
-
-                    % HO interruption: no data served during interruption
-                    if ctx.slot < ctx.ueBlockedUntilSlot(u)
+                    %% Skip if HO interruption or RLF outage
+                    if isfield(ctx,'ueBlockedUntilSlot') && ...
+                       ctx.slot < ctx.ueBlockedUntilSlot(u)
+                        continue;
+                    end
+                    if isfield(ctx,'ueInOutageUntilSlot') && ...
+                       ctx.slot < ctx.ueInOutageUntilSlot(u)
                         continue;
                     end
 
+                    %% PHY scheduling info
                     schedInfo.ueId   = u;
                     schedInfo.numPRB = prb;
                     schedInfo.mcs    = [];
 
                     radioMeas.sinr_dB = ctx.sinr_dB(u);
 
+                    %% PHY step (HARQ handled internally)
                     obj.phyMac = obj.phyMac.step(schedInfo, radioMeas);
+
                     bits = obj.phyMac.getServedBits(u);
 
-                    % PHY feedback (last write wins in this slot)
+                    %% Feedback
                     ctx.tmp.lastBLERPerUE(u) = obj.phyMac.lastBLER(u);
-                    ctx.tmp.lastCQIPerUE(u)  = localSinrToCQI(ctx.sinr_dB(u));
-                    ctx.tmp.lastMCSPerUE(u)  = max(ctx.tmp.lastCQIPerUE(u)-1,0);
+                    ctx.tmp.lastMCSPerUE(u)  = obj.phyMac.lastMCS(u);
 
-                    % Serve traffic
+                    % CQI approximate (for state bus visibility)
+                    ctx.tmp.lastCQIPerUE(u)  = localSinrToCQI(ctx.sinr_dB(u));
+
+                    %% Serve traffic queue
                     [ctx.scenario.traffic.model, served] = ...
                         ctx.scenario.traffic.model.serve(u, bits);
 
+                    %% Accumulate throughput
                     ctx.accThroughputBitPerUE(u) = ...
                         ctx.accThroughputBitPerUE(u) + served;
+
+                    ctx.tmp.lastServedBitsPerUE(u) = ...
+                        ctx.tmp.lastServedBitsPerUE(u) + served;
+
+                    %% PRB usage accounting
+                    if served > 0
+                        ctx.accPRBUsedPerCell(c) = ...
+                            ctx.accPRBUsedPerCell(c) + prb;
+
+                        ctx.tmp.lastPRBUsedPerCell(c) = ...
+                            ctx.tmp.lastPRBUsedPerCell(c) + prb;
+                    end
                 end
             end
         end
     end
 end
 
+%% ==========================================
+% Local helper
+%% ==========================================
+
 function cqi = localSinrToCQI(sinr_dB)
-th = [-5 -2 1 3 5 7 9 11 13 15 17 19 21 23 25];
-cqi = find(sinr_dB < th,1)-1;
-if isempty(cqi), cqi = 15; end
-cqi = max(min(cqi,15),1);
+    th = [-6 -4 -2 0 2 4 6 8 10 12 14 16 18 20 22];
+    cqi = find(sinr_dB < th,1)-1;
+    if isempty(cqi), cqi = 15; end
+    cqi = max(min(cqi,15),1);
 end
+

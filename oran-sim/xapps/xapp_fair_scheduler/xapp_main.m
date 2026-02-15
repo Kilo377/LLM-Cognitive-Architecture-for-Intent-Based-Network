@@ -1,56 +1,58 @@
 function action = xapp_main(input)
 %XAPP_FAIR_SCHEDULER
-% Fairness-oriented scheduler
-%
-% 策略：
-%   每个小区选择 buffer 最大的 UE
-%
-% 冲突目标：
-%   与 xapp_throughput_scheduler 在 selectedUE 上冲突
-%
-% 输出：
-%   action.scheduling.selectedUE (cell-level)
+% Fair scheduler based on buffer backlog + channel quality
 
     obs = input.measurements;
 
     numCell = obs.numCell;
+    numUE   = obs.numUE;
 
-    % 默认不干预
     sel = zeros(numCell,1);
-
-    % 必须有 buffer 信息
-    if ~isfield(obs, "buffer_bits")
-        action = struct();
-        action.scheduling.selectedUE = sel;
-        action.metadata.xapp = "xapp_fair_scheduler";
-        return;
-    end
 
     for c = 1:numCell
 
-        % 当前小区 UE 集合
         ueSet = find(obs.servingCell == c);
         if isempty(ueSet)
             continue;
         end
 
-        % 取 buffer
-        buf = obs.buffer_bits(ueSet);
-
-        % 如果全部为 0，则不干预
-        if all(buf == 0)
-            continue;
+        % 只调度有数据的 UE
+        if isfield(obs,'buffer_bits')
+            hasData = obs.buffer_bits(ueSet) > 0;
+            ueSet = ueSet(hasData);
+            if isempty(ueSet)
+                continue;
+            end
         end
 
-        % 选择 buffer 最大的 UE
-        [~, idx] = max(buf);
+        sinr = obs.sinr_dB(ueSet);
+
+        % 速率近似
+        rateEst = log2(1 + 10.^(sinr/10));
+
+        % backlog 权重
+        if isfield(obs,'buffer_bits')
+            backlog = obs.buffer_bits(ueSet);
+        else
+            backlog = ones(size(ueSet));
+        end
+
+        % Normalize backlog
+        if max(backlog) > 0
+            backlogNorm = backlog / max(backlog);
+        else
+            backlogNorm = backlog;
+        end
+
+        % Fair score
+        score = backlogNorm .* rateEst;
+
+        [~, idx] = max(score);
         u = ueSet(idx);
 
         sel(c) = u;
     end
 
-    % 输出到 scheduling 模块
-    action = struct();
-    action.scheduling.selectedUE = sel;
+    action.control.selectedUE = sel;
     action.metadata.xapp = "xapp_fair_scheduler";
 end

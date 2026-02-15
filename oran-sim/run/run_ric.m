@@ -1,5 +1,10 @@
-function result = run_scenario_visual()
-%RUN_MVP_RIC_VISUAL Quantitative experiment with realtime visualization
+function result = run_ric()
+%RUN_RIC Modern modular ORAN-SIM runner
+%
+% - Modular Kernel compatible
+% - Supports RIC + xApps
+% - Stable path handling
+% - Clean KPI output
 
     %% =========================================================
     % Setup path
@@ -7,7 +12,7 @@ function result = run_scenario_visual()
     rootDir = setup_path();
 
     fprintf('\n============================\n');
-    fprintf('[RUN] Quantitative RIC experiment (Visual Mode)\n');
+    fprintf('[RUN] Modular ORAN-SIM experiment\n');
     fprintf('============================\n');
 
     %% =========================================================
@@ -15,21 +20,27 @@ function result = run_scenario_visual()
     %% =========================================================
     cfg = default_config();
 
-    if ~isfield(cfg,'nearRT'); cfg.nearRT = struct(); end
+    if ~isfield(cfg,'nearRT')
+        cfg.nearRT = struct();
+    end
+
     if ~isfield(cfg.nearRT,'periodSlot')
         cfg.nearRT.periodSlot = 10;
     end
 
-    cfg.nearRT.xappRoot = fullfile(rootDir,"xapps");
+    cfg.nearRT.xappRoot = fullfile(rootDir, "xapps");
 
-    totalSlot = 5000;
+    %% =========================================================
+    % Simulation length
+    %% =========================================================
+    totalSlot = 0.5 * 10000;
     cfg.sim.slotPerEpisode = totalSlot;
 
     %% =========================================================
     % Select xApps
     %% =========================================================
     xAppSet = [
-        %"xapp_trajectory_handover"
+       % "xapp_fair_scheduler"
     ];
 
     if isempty(xAppSet)
@@ -43,73 +54,56 @@ function result = run_scenario_visual()
     % Scenario + Kernel
     %% =========================================================
     scenario = ScenarioBuilder(cfg);
-    ran = RanKernelNR(cfg, scenario);
+    ran      = RanKernelNR(cfg, scenario);
+
+    %% =========================================================
+    % RIC
+    %% =========================================================
     ric = NearRTRIC(cfg, "xappSet", xAppSet);
 
     %% =========================================================
-    % Visualization
+    % Main Loop
     %% =========================================================
-    viz = VisualizationManager();
-
-    trajHistory = cell(cfg.scenario.numUE,1);
-    for u = 1:cfg.scenario.numUE
-        trajHistory{u} = [];
-    end
-
-    %% =========================================================
-    % Main loop
-    %% =========================================================
-    lastAction = RanActionBus.init(cfg);
+    action = RanActionBus.init(cfg);
 
     for slot = 1:totalSlot
 
-        % --- RIC step ---
+        % RIC update
         [ric, action] = ric.step(ran.getState());
-        lastAction = action;
 
-        % --- RAN step ---
-        ran = ran.stepWithAction(lastAction);
+        % Kernel step (NEW unified interface)
+        ran = ran.step(action);
 
-        % --- 取当前状态 ---
-        state = ran.getState();
-
-        % --- 记录轨迹 ---
-        for u = 1:cfg.scenario.numUE
-            trajHistory{u}(end+1,:) = state.ue.pos(u,:);
-        end
-
-        % --- 扩展字段 ---
-        state.ext.trajHistory = trajHistory;
-        state.ext.handoverCount = state.kpi.handoverCount;
-
-        % --- 更新可视化 ---
-        viz.update(state);
     end
 
     %% =========================================================
-    % Final KPI
+    % Finalize
     %% =========================================================
     report = ran.finalize();
 
-    totalTime = totalSlot * cfg.sim.slotDuration;
-    avgThroughput_Mbps = report.throughput_bps_total / totalTime / 1e6;
+    simTime = totalSlot * cfg.sim.slotDuration;
 
     fprintf('\n===== FINAL KPI REPORT =====\n');
-    fprintf('Sim duration: %.2f s\n', totalTime);
-    fprintf('Avg Throughput: %.2f Mbps\n', avgThroughput_Mbps);
+    fprintf('Sim duration: %.2f s\n', simTime);
+    fprintf('Total throughput: %.2f Mbps\n', report.throughput_bps_total/1e6);
     fprintf('HO count: %d\n', report.handover_count);
-    fprintf('Dropped total: %d\n', report.dropped_total);
-    fprintf('Dropped URLLC: %d\n', report.dropped_urllc);
+    fprintf('Dropped total: %d\n', report.drop_total);
+    fprintf('Dropped URLLC: %d\n', report.drop_urllc);
+
+    fprintf('Energy total: %.2f J\n', report.energy_J_total);
+    fprintf('Energy efficiency: %.2f bit/J\n', report.energy_eff_bit_per_J);
     fprintf('============================\n\n');
 
     %% =========================================================
-    % Return result
+    % Structured result
     %% =========================================================
     result = struct();
-    result.xAppSet = xAppSet;
-    result.simDuration_s = totalTime;
-    result.avgThroughput_Mbps = avgThroughput_Mbps;
-    result.handover_count = report.handover_count;
-    result.dropped_total = report.dropped_total;
-    result.dropped_urllc = report.dropped_urllc;
+    result.simDuration_s = simTime;
+    result.xAppSet       = xAppSet;
+    result.throughput_Mbps = report.throughput_bps_total/1e6;
+    result.handover_count  = report.handover_count;
+    result.drop_total      = report.drop_total;
+    result.drop_urllc      = report.drop_urllc;
+    result.energy_J        = report.energy_J_total;
+    result.energy_eff      = report.energy_eff_bit_per_J;
 end

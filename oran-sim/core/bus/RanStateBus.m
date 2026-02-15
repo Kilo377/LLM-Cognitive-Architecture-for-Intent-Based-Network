@@ -1,66 +1,49 @@
 classdef RanStateBus
-%RANSTATEBUS Standard state bus for modular ORAN-SIM
+%RANSTATEBUS Standard state bus for ORAN-SIM (extended)
 %
-% 设计目标：
-% - Kernel 只写
-% - RIC / xApp 只读
-% - 字段语义长期稳定
-% - 只新增字段，不破坏旧字段
+% Goals:
+%  1) Kernel/StateModel only writes state bus
+%  2) RIC/xApp only reads state bus
+%  3) Field semantics stable: only append new fields
 
     methods (Static)
 
-        %% =========================================================
-        % INIT
-        %% =========================================================
         function state = init(cfg)
 
             numUE   = cfg.scenario.numUE;
             numCell = cfg.scenario.numCell;
 
-            %% =========================
-            % Time
-            %% =========================
+            %% -------- time --------
             state.time = struct();
             state.time.slot = 0;
             state.time.t_s  = 0;
 
-            %% =========================
-            % Topology
-            %% =========================
+            %% -------- topology --------
             state.topology = struct();
             state.topology.numCell = numCell;
             state.topology.numUE   = numUE;
             state.topology.gNBPos  = zeros(numCell,3);
 
-            %% =========================
-            % UE state
-            %% =========================
+            %% -------- UE --------
             state.ue = struct();
 
-            % Geometry / association
             state.ue.pos         = zeros(numUE,3);
             state.ue.servingCell = ones(numUE,1);
 
-            % Radio
             state.ue.sinr_dB  = zeros(numUE,1);
             state.ue.rsrp_dBm = -inf(numUE,numCell);
 
-            % PHY feedback
+            % PHY feedback (optional)
             state.ue.cqi  = zeros(numUE,1);
             state.ue.mcs  = zeros(numUE,1);
             state.ue.bler = zeros(numUE,1);
 
-            % Buffer / traffic
+            % Traffic / QoS observability
             state.ue.buffer_bits      = zeros(numUE,1);
             state.ue.urgent_pkts      = zeros(numUE,1);
             state.ue.minDeadline_slot = inf(numUE,1);
 
-            % HO interruption observability
-            state.ue.hoBlocked = false(numUE,1);
-
-            %% =========================
-            % Cell state
-            %% =========================
+            %% -------- cell --------
             state.cell = struct();
 
             state.cell.prbTotal = zeros(numCell,1);
@@ -68,31 +51,43 @@ classdef RanStateBus
             state.cell.prbUtil  = zeros(numCell,1);
 
             state.cell.txPower_dBm = zeros(numCell,1);
-            state.cell.energy_J    = zeros(numCell,1);
-            state.cell.sleepState  = zeros(numCell,1);
 
-            % HO parameters
+            % Energy
+            state.cell.energy_J = zeros(numCell,1);     % accumulated
+            state.cell.power_W  = zeros(numCell,1);     % instant (optional)
+
+            state.cell.sleepState = zeros(numCell,1);
+
+            % HO config observability (optional, filled by StateModel)
             state.cell.hoHysteresisBaseline_dB  = zeros(numCell,1);
             state.cell.hoHysteresisEffective_dB = zeros(numCell,1);
 
-            %% =========================
-            % Channel
-            %% =========================
+            %% -------- channel (optional) --------
             state.channel = struct();
             state.channel.interference_dBm = nan(numUE,1);
             state.channel.noise_dBm        = nan(numUE,1);
 
-            %% =========================
-            % Events
-            %% =========================
+            %% -------- events --------
             state.events = struct();
 
+            % HO events & accumulators
             state.events.handover = struct();
-            state.events.handover.countTotal = 0;
-            state.events.handover.lastUE     = 0;
-            state.events.handover.lastFrom   = 0;
-            state.events.handover.lastTo     = 0;
+            state.events.handover.countTotal   = 0;   % accumulated HO count
+            state.events.handover.lastUE       = 0;
+            state.events.handover.lastFrom     = 0;
+            state.events.handover.lastTo       = 0;
 
+            state.events.handover.pingPongCount = 0;  % accumulated ping-pong count
+            state.events.handover.lastPingPongUE = 0; % optional
+
+            % RLF events & accumulators
+            state.events.rlf = struct();
+            state.events.rlf.countTotal = 0;          % accumulated RLF count (optional)
+            state.events.rlf.lastUE     = 0;
+            state.events.rlf.lastFrom   = 0;
+            state.events.rlf.lastTo     = 0;
+
+            % Anomaly (reserved)
             state.events.anomaly = struct();
             state.events.anomaly.flag     = false;
             state.events.anomaly.type     = "";
@@ -100,154 +95,65 @@ classdef RanStateBus
             state.events.anomaly.ueId     = 0;
             state.events.anomaly.cellId   = 0;
 
-            %% =========================
-            % KPI (safe exposure)
-            %% =========================
+            %% -------- KPI (episode accumulators) --------
             state.kpi = struct();
 
             state.kpi.throughputBitPerUE = zeros(numUE,1);
-            state.kpi.dropTotal          = 0;
-            state.kpi.dropURLLC          = 0;
-            state.kpi.handoverCount      = 0;
-            state.kpi.energyJPerCell     = zeros(numCell,1);
-            state.kpi.prbUtilPerCell     = zeros(numCell,1);
 
+            state.kpi.dropTotal = 0;
+            state.kpi.dropURLLC = 0;
+
+            state.kpi.handoverCount = 0;
+
+            state.kpi.energyJPerCell = zeros(numCell,1);
+            state.kpi.prbUtilPerCell = zeros(numCell,1);
+
+            % Optional: separated signaling energy (if you maintain it in ctx)
+            state.kpi.energySignal_J_total = 0;
         end
 
-
-        %% =========================================================
-        % VALIDATE
-        %% =========================================================
         function validate(state, cfg)
 
             numUE   = cfg.scenario.numUE;
             numCell = cfg.scenario.numCell;
 
+            % time
+            assert(isfield(state,'time') && isfield(state.time,'slot') && isfield(state.time,'t_s'));
+
+            % topology
+            assert(isfield(state,'topology') && all(size(state.topology.gNBPos) == [numCell,3]));
+
+            % ue
+            assert(isfield(state,'ue'));
             assert(all(size(state.ue.pos) == [numUE,3]));
             assert(all(size(state.ue.servingCell) == [numUE,1]));
             assert(all(size(state.ue.sinr_dB) == [numUE,1]));
             assert(all(size(state.ue.rsrp_dBm) == [numUE,numCell]));
 
+            assert(all(size(state.ue.buffer_bits) == [numUE,1]));
+            assert(all(size(state.ue.urgent_pkts) == [numUE,1]));
+            assert(all(size(state.ue.minDeadline_slot) == [numUE,1]));
+
+            % cell
+            assert(isfield(state,'cell'));
             assert(all(size(state.cell.prbTotal) == [numCell,1]));
             assert(all(size(state.cell.prbUsed)  == [numCell,1]));
             assert(all(size(state.cell.prbUtil)  == [numCell,1]));
+            assert(all(size(state.cell.txPower_dBm) == [numCell,1]));
+            assert(all(size(state.cell.energy_J)    == [numCell,1]));
+            assert(all(size(state.cell.power_W)     == [numCell,1]));
+            assert(all(size(state.cell.sleepState)  == [numCell,1]));
 
+            % events
+            assert(isfield(state,'events') && isfield(state.events,'handover'));
+            assert(isfield(state.events.handover,'countTotal'));
+            assert(isfield(state.events,'rlf') && isfield(state.events.rlf,'countTotal'));
+
+            % kpi
+            assert(isfield(state,'kpi'));
             assert(all(size(state.kpi.throughputBitPerUE) == [numUE,1]));
             assert(all(size(state.kpi.energyJPerCell)     == [numCell,1]));
-
-        end
-
-
-        %% =========================================================
-        % BUILD FROM CONTEXT
-        %% =========================================================
-        function state = buildFromContext(state, ctx)
-
-            numUE   = ctx.cfg.scenario.numUE;
-            numCell = ctx.cfg.scenario.numCell;
-
-            %% =========================
-            % Time
-            %% =========================
-            state.time.slot = ctx.slot;
-            state.time.t_s  = ctx.slot * ctx.dt;
-
-            %% =========================
-            % Topology
-            %% =========================
-            state.topology.gNBPos = ctx.scenario.topology.gNBPos;
-
-            %% =========================
-            % UE state
-            %% =========================
-            state.ue.pos         = ctx.uePos;
-            state.ue.servingCell = ctx.servingCell;
-            state.ue.sinr_dB     = ctx.sinr_dB;
-            state.ue.rsrp_dBm    = ctx.rsrp_dBm;
-
-            if isfield(ctx.tmp,'lastCQIPerUE')
-                state.ue.cqi = ctx.tmp.lastCQIPerUE;
-            end
-            if isfield(ctx.tmp,'lastMCSPerUE')
-                state.ue.mcs = ctx.tmp.lastMCSPerUE;
-            end
-            if isfield(ctx.tmp,'lastBLERPerUE')
-                state.ue.bler = ctx.tmp.lastBLERPerUE;
-            end
-
-            % HO interruption observability
-            state.ue.hoBlocked = ctx.slot < ctx.ueBlockedUntilSlot;
-
-            %% =========================
-            % Traffic
-            %% =========================
-            qSum = zeros(numUE,1);
-            urg  = zeros(numUE,1);
-            minDL = inf(numUE,1);
-
-            for u = 1:numUE
-                q = ctx.scenario.traffic.model.getQueue(u);
-                if isempty(q), continue; end
-
-                qSum(u) = sum([q.size]);
-
-                d = [q.deadline];
-                urg(u) = sum(isfinite(d) & d <= 5);
-
-                if any(isfinite(d))
-                    minDL(u) = min(d(isfinite(d)));
-                end
-            end
-
-            state.ue.buffer_bits      = qSum;
-            state.ue.urgent_pkts      = urg;
-            state.ue.minDeadline_slot = minDL;
-
-            %% =========================
-            % Cell
-            %% =========================
-            state.cell.prbTotal = ctx.numPRB * ones(numCell,1);
-
-            if isfield(ctx.tmp,'lastPRBUsedPerCell')
-                state.cell.prbUsed = ctx.tmp.lastPRBUsedPerCell;
-            else
-                state.cell.prbUsed = zeros(numCell,1);
-            end
-
-            state.cell.prbUtil = ...
-                state.cell.prbUsed ./ max(state.cell.prbTotal,1);
-
-            state.cell.txPower_dBm = ...
-                ctx.txPowerCell_dBm * ones(numCell,1);
-
-            state.cell.energy_J = ctx.accEnergyJPerCell;
-
-            %% =========================
-            % Events
-            %% =========================
-            state.events.handover.countTotal = ctx.accHOCount;
-
-            if isfield(ctx.tmp,'events') && ...
-               isfield(ctx.tmp.events,'lastHOue')
-
-                state.events.handover.lastUE   = ctx.tmp.events.lastHOue;
-                state.events.handover.lastFrom = ctx.tmp.events.lastHOfrom;
-                state.events.handover.lastTo   = ctx.tmp.events.lastHOto;
-            end
-
-            %% =========================
-            % KPI
-            %% =========================
-            state.kpi.throughputBitPerUE = ctx.accThroughputBitPerUE;
-            state.kpi.dropTotal          = ctx.accDroppedTotal;
-            state.kpi.dropURLLC          = ctx.accDroppedURLLC;
-            state.kpi.handoverCount      = ctx.accHOCount;
-            state.kpi.energyJPerCell     = ctx.accEnergyJPerCell;
-
-            state.kpi.prbUtilPerCell = ...
-                ctx.accPRBUsedPerCell ./ ...
-                max(ctx.accPRBTotalPerCell,1);
-
+            assert(all(size(state.kpi.prbUtilPerCell)     == [numCell,1]));
         end
     end
 end

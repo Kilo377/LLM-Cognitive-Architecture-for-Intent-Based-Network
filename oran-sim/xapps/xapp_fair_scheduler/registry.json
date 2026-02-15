@@ -1,8 +1,8 @@
 {
   "xapp_id": "xapp_fair_scheduler",
-  "xapp_name": "Fairness-Oriented Scheduler",
+  "xapp_name": "Proportional Fair Scheduler",
   "xapp_version": "0.1",
-  "xapp_description": "Improve fairness by scheduling UE with largest buffer",
+  "xapp_description": "Balance throughput and fairness using PF metric",
 
   "entry_point": "xapp_main",
   "language": "matlab",
@@ -19,15 +19,11 @@
   "affected_kpis": [
     {
       "kpi_name": "throughput",
-      "effect": "negative"
+      "effect": "balanced"
     },
     {
       "kpi_name": "fairness",
       "effect": "positive"
-    },
-    {
-      "kpi_name": "drop_rate",
-      "effect": "negative"
     }
   ],
 

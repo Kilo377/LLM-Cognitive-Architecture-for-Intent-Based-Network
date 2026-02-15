@@ -1,177 +1,193 @@
 classdef RanActionBus
-%RANACTIONBUS Standard action bus for ORAN-SIM (Finalized Version)
+%RANACTIONBUS Stable control interface for modular ORAN-SIM
 %
-% ========================= 角色定位 =========================
-%
-% RanActionBus 是 near-RT RIC 与 RanKernelNR 之间的
-% "唯一、稳定、强约束"的动作接口。
-%
-% - xApp           ：不能直接写 RanActionBus
-% - xApp           ：只输出 action.control.{key}
-% - near-RT RIC    ：负责 control -> RanActionBus 的语义映射
-% - ActionGuard    ：调用 validate 做安全裁剪
-% - RanKernelNR    ：只读取 RanActionBus，不做任何校验
-%
-% ========================= 设计原则 =========================
-%
-% 1. 所有字段都有 baseline 回退语义
-% 2. 所有向量长度都由 cfg.scenario 决定
-% 3. validate 是唯一合法性检查入口
-% 4. 新控制域只允许"加字段"，不允许改语义
-%
-% ===========================================================
+% Principles:
+%   - Only RIC writes this
+%   - Kernel never validates
+%   - validate() is the only legal guard
+%   - Add-only evolution rule
 
     methods (Static)
 
+        %% ===============================
+        % Initialize
+        %% ===============================
         function action = init(cfg)
-            %INIT Initialize an empty action bus with safe defaults
-            %
-            % 所有字段初始化为"无控制"状态
-            % kernel 在检测到无控制值时自动走 baseline
 
             numCell = cfg.scenario.numCell;
             numUE   = cfg.scenario.numUE;
 
             action = struct();
 
-            %% ==================================================
-            % Scheduling control (near-RT)
-            %% ==================================================
-            % 每小区选择一个 UE
-            % selectedUE(c) = u
-            %   u = 0  : 不干预，kernel 使用 baseline 调度
-            %   u > 0  : 指定 UE 索引
+            %% -------- Scheduling --------
             action.scheduling = struct();
-            action.scheduling.selectedUE = zeros(numCell,1);
+            action.scheduling.selectedUE = zeros(numCell,1);   % legacy
+            action.scheduling.weightUE   = ones(numUE,1);      % QoS weight override
 
-            %% ==================================================
-            % Power control (reserved)
-            %% ==================================================
-            % 小区发射功率相对偏置（dB）
-            % 正值：升功率
-            % 负值：降功率
+            %% -------- Power --------
             action.power = struct();
             action.power.cellTxPowerOffset_dB = zeros(numCell,1);
 
-            %% ==================================================
-            % Cell sleep control (reserved)
-            %% ==================================================
-            % 每小区睡眠状态
-            % 0 : on
-            % 1 : light sleep
-            % 2 : deep sleep
+            %% -------- Sleep --------
             action.sleep = struct();
-            action.sleep.cellSleepState = zeros(numCell,1);
+            action.sleep.cellSleepState = zeros(numCell,1);    % 0/1/2
 
-            %% ==================================================
-            % Handover control (reserved)
-            %% ==================================================
-            % 小区级切换滞回参数偏置（dB）
-            % 正值：延迟切换
-            % 负值：提前切换
+            %% -------- Handover --------
             action.handover = struct();
             action.handover.hysteresisOffset_dB = zeros(numCell,1);
+            action.handover.tttOffset_slot      = zeros(numCell,1);
 
-            %% ==================================================
-            % Beamforming control (reserved)
-            %% ==================================================
-            % UE 级波束选择
-            % ueBeamId(u) = b
-            %   b = 0 : 不控制
-            %   b > 0 : 指定波束索引
+            %% -------- Beamforming --------
             action.beam = struct();
             action.beam.ueBeamId = zeros(numUE,1);
+            action.beam.mode     = "static";  % reserved for future
+
+            %% -------- QoS Control --------
+            action.qos = struct();
+            action.qos.servicePriority = struct( ...
+                'eMBB', 1.0, ...
+                'URLLC', 1.0, ...
+                'mMTC', 1.0 );
+
+            %% -------- Radio Control --------
+            action.radio = struct();
+            action.radio.bandwidthScale = ones(numCell,1); % 0~1
+            action.radio.interferenceMitigation = false;
+
+            %% -------- Energy Policy --------
+            action.energy = struct();
+            action.energy.basePowerScale = ones(numCell,1);
+
+            %% -------- RLF Control --------
+            action.rlf = struct();
+            action.rlf.sinrThresholdOffset_dB = 0;
+
+            %% -------- Reserved Extension --------
+            action.ext = struct(); % future-proof bucket
         end
 
+        %% ===============================
+        % Validate
+        %% ===============================
         function action = validate(action, cfg, state)
-            %VALIDATE Sanity check and clip action into valid range
-            %
-            % 该函数只在 near-RT RIC 内部调用
-            % kernel 假设输入 action 已经是合法的
-            %
-            % validate 只做三件事：
-            % 1. 维度检查
-            % 2. 数值裁剪
-            % 3. 物理一致性检查
 
             numCell = cfg.scenario.numCell;
             numUE   = cfg.scenario.numUE;
 
-            %% ==================================================
-            % Scheduling validation
-            %% ==================================================
-            sel = action.scheduling.selectedUE;
+            %% -------- Scheduling --------
+            if ~isfield(action,'scheduling')
+                action.scheduling = struct();
+            end
 
-            if ~isvector(sel) || numel(sel) ~= numCell
+            if ~isfield(action.scheduling,'selectedUE') || ...
+               numel(action.scheduling.selectedUE) ~= numCell
                 action.scheduling.selectedUE = zeros(numCell,1);
             else
-                sel = round(sel(:));
+                sel = round(action.scheduling.selectedUE(:));
                 sel(sel < 0) = 0;
                 sel(sel > numUE) = 0;
 
-                % 必须是该小区的 serving UE
+                % must belong to serving cell
                 for c = 1:numCell
                     u = sel(c);
-                    if u == 0
-                        continue;
-                    end
-                    if state.ue.servingCell(u) ~= c
+                    if u>0 && state.ue.servingCell(u) ~= c
                         sel(c) = 0;
                     end
                 end
-
                 action.scheduling.selectedUE = sel;
             end
 
-            %% ==================================================
-            % Power control validation
-            %% ==================================================
-            p = action.power.cellTxPowerOffset_dB;
+            if ~isfield(action.scheduling,'weightUE') || ...
+               numel(action.scheduling.weightUE) ~= numUE
+                action.scheduling.weightUE = ones(numUE,1);
+            else
+                w = action.scheduling.weightUE(:);
+                w(w<0) = 0;
+                w(w>10) = 10;
+                action.scheduling.weightUE = w;
+            end
 
-            if numel(p) ~= numCell
+            %% -------- Power --------
+            if ~isfield(action,'power') || ...
+               numel(action.power.cellTxPowerOffset_dB) ~= numCell
                 action.power.cellTxPowerOffset_dB = zeros(numCell,1);
             else
                 action.power.cellTxPowerOffset_dB = ...
-                    max(min(p(:), 10), -10);
+                    max(min(action.power.cellTxPowerOffset_dB(:), 10), -10);
             end
 
-            %% ==================================================
-            % Sleep control validation
-            %% ==================================================
-            s = action.sleep.cellSleepState;
-
-            if numel(s) ~= numCell
+            %% -------- Sleep --------
+            if ~isfield(action,'sleep') || ...
+               numel(action.sleep.cellSleepState) ~= numCell
                 action.sleep.cellSleepState = zeros(numCell,1);
             else
-                s = round(s(:));
-                s(s < 0) = 0;
-                s(s > 2) = 2;
+                s = round(action.sleep.cellSleepState(:));
+                s(s<0)=0; s(s>2)=2;
                 action.sleep.cellSleepState = s;
             end
 
-            %% ==================================================
-            % Handover control validation
-            %% ==================================================
-            h = action.handover.hysteresisOffset_dB;
+            %% -------- Handover --------
+            if ~isfield(action,'handover')
+                action.handover = struct();
+            end
 
-            if numel(h) ~= numCell
+            if ~isfield(action.handover,'hysteresisOffset_dB') || ...
+               numel(action.handover.hysteresisOffset_dB) ~= numCell
                 action.handover.hysteresisOffset_dB = zeros(numCell,1);
             else
                 action.handover.hysteresisOffset_dB = ...
-                    max(min(h(:), 5), -5);
+                    max(min(action.handover.hysteresisOffset_dB(:),5),-5);
             end
 
-            %% ==================================================
-            % Beamforming control validation
-            %% ==================================================
-            b = action.beam.ueBeamId;
+            if ~isfield(action.handover,'tttOffset_slot') || ...
+               numel(action.handover.tttOffset_slot) ~= numCell
+                action.handover.tttOffset_slot = zeros(numCell,1);
+            else
+                action.handover.tttOffset_slot = ...
+                    max(min(round(action.handover.tttOffset_slot(:)),10),-5);
+            end
 
-            if numel(b) ~= numUE
+            %% -------- Beam --------
+            if ~isfield(action,'beam') || ...
+               numel(action.beam.ueBeamId) ~= numUE
                 action.beam.ueBeamId = zeros(numUE,1);
             else
-                b = round(b(:));
-                b(b < 0) = 0;
+                b = round(action.beam.ueBeamId(:));
+                b(b<0)=0;
                 action.beam.ueBeamId = b;
+            end
+
+            %% -------- QoS --------
+            if ~isfield(action,'qos')
+                action.qos.servicePriority = struct('eMBB',1,'URLLC',1,'mMTC',1);
+            end
+
+            %% -------- Radio --------
+            if ~isfield(action,'radio') || ...
+               numel(action.radio.bandwidthScale) ~= numCell
+                action.radio.bandwidthScale = ones(numCell,1);
+            else
+                bs = action.radio.bandwidthScale(:);
+                bs(bs<0)=0; bs(bs>1)=1;
+                action.radio.bandwidthScale = bs;
+            end
+
+            %% -------- Energy --------
+            if ~isfield(action,'energy') || ...
+               numel(action.energy.basePowerScale) ~= numCell
+                action.energy.basePowerScale = ones(numCell,1);
+            else
+                s = action.energy.basePowerScale(:);
+                s(s<0.2)=0.2; s(s>1.2)=1.2;
+                action.energy.basePowerScale = s;
+            end
+
+            %% -------- RLF --------
+            if ~isfield(action,'rlf')
+                action.rlf.sinrThresholdOffset_dB = 0;
+            else
+                action.rlf.sinrThresholdOffset_dB = ...
+                    max(min(action.rlf.sinrThresholdOffset_dB,5),-5);
             end
         end
     end

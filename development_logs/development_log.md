@@ -314,7 +314,7 @@ hysteresis不一定会影响任何一个KPI
 问题在于性建模不够充分,
 
 
-## 20260215 NR升级
+## 20260215 Core升级
 经过当前分析, 场景存在以下问题:
 1. 物理层建模不充分, 这影响了参数层的设计,
 2. RanKernelNR太冗余了, 不好修改, 可能要再次拆解
@@ -330,3 +330,46 @@ RanKernelNR 是一个"简化的系统级 NR 小区级仿真引擎", 负责
 1. 仿真程度不够真实. 我想要实现: xApp的部署, 并且分析它对网络的影响, 但是由于当前模型考虑不充分, 例如我想做HO的优化, 但是其控制参数既没有对网络KPI, 例如吞吐产生影响, 又没有代价模型. 当然, 我说的不仅是HO一个模型的问题, 我还想做beamforming, 能耗, 频谱优化, MAC调度, 业务等 
 2. 这个NR代码写的非常长, 难以修改跟新, 我希望在保证当前逻辑与接口的情况下, 进一步对它进行解耦, 这样我方便后续的升级和修改 
 3. 由于我对通信了解不深, 我希望解耦后的模型支持我频繁的升级与改动
+
+## Core升级
+改进NR需要对整个core进行重构
+```
+core/
+│
+├── kernel/
+│   ├── RanKernelNR.m              % 外壳，只做slot管线调度
+│   └── RanContext.m               % 运行时状态容器（新）
+│
+├── models/
+│   ├── mobility/
+│   │   └── UEMobilityModel.m
+│   │
+│   ├── traffic/
+│   │   └── TrafficModel.m
+│   │
+│   ├── radio/
+│   │   ├── RadioModel.m           % RSRP + SINR + beamforming
+│   │   └── ChannelModel.m         % 可选，高保真升级位
+│   │
+│   ├── ho/
+│   │   └── HandoverModel.m        % A3 + TTT + interruption
+│   │
+│   ├── scheduler/
+│   │   ├── SchedulerBaseline.m
+│   │   └── SchedulerActionAware.m
+│   │
+│   ├── phy/
+│   │   └── NrPhyMacAdapter.m
+│   │
+│   ├── energy/
+│   │   └── EnergyModel.m
+│   │
+│   └── kpi/
+│       └── KpiTracker.m
+│
+├── bus/
+│   ├── RanStateBus.m
+│   └── RanActionBus.m
+│
+└── ScenarioBuilder.m
+```

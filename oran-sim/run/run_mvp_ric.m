@@ -38,9 +38,9 @@ function result = run_mvp_ric()
     % Select xApps (edit here)
     %% =========================================================
     xAppSet = [
-         %"xapp_fair_scheduler"
+         "xapp_fair_scheduler"
          %"xapp_trajectory_handover"
-         "xapp_throughput_scheduler"
+         %"xapp_throughput_scheduler"
     ];
 
     if isempty(xAppSet)

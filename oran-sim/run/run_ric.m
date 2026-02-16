@@ -41,6 +41,8 @@ function result = run_ric()
     %% =========================================================
     xAppSet = [
        % "xapp_fair_scheduler"
+         "xapp_urllc_priority"
+       %"xapp_worst_sinr"
     ];
 
     if isempty(xAppSet)

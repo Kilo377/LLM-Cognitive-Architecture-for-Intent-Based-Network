@@ -1,0 +1,24 @@
+{
+  "xapp_id": "xapp_urllc_priority",
+  "xapp_name": "URLLC Priority Scheduler",
+  "xapp_version": "0.2",
+  "entry_point": "xapp_main",
+  "language": "matlab",
+  "execution_type": "periodic",
+
+  "control_parameters": [
+    {
+      "name": "selectedUE",
+      "type": "discrete",
+      "scope": "cell",
+      "path": "scheduling.selectedUE"
+    }
+  ],
+
+  "affected_kpis": [
+    {
+      "kpi_name": "dropURLLC",
+      "effect": "negative"
+    }
+  ]
+}

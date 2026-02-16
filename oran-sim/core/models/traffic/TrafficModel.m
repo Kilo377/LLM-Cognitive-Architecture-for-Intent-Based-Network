@@ -1,61 +1,69 @@
 classdef TrafficModel
-%TRAFFICMODEL v2: Multi-service traffic with UE profiles and burstiness
+%TRAFFICMODEL v3: UE-heterogeneous multi-service traffic with QoS-aware drops
 %
-% API compatible with existing kernel/models:
+% Compatible API:
 %   obj = obj.step()
 %   obj = obj.decreaseDeadline()
 %   [obj, dropped] = obj.dropExpired()
 %   [obj, servedBits] = obj.serve(ueId, bits)
 %   q = obj.getQueue(ueId)
 %
-% Packet struct fields:
+% Packet fields:
 %   .size      (bits)
 %   .deadline  (slots) (inf for eMBB)
 %   .type      ('eMBB'/'URLLC'/'mMTC')
 %   .age       (slots)
 %   .ueId
-%   .t0_slot   (arrival slot index)
+%   .t0_slot
 
     properties
         numUE
         slotDuration
 
-        % UE profile: weights for traffic mix
-        profileType          % string array [numUEx1]: "eMBB"/"Mixed"/"URLLC"/"mMTC"
-        mixWeight            % [numUE x 3] weights [eMBB URLLC mMTC] normalized
-
-        % Base arrival rates (packets/sec) per service for a "typical" UE
+        %% ===== Base rates (pkts/sec) for a "unit" UE =====
         baseRate_embb
         baseRate_urllc
         baseRate_mmtc
 
-        % Packet sizes (bits)
+        %% ===== Base packet sizes (bits) =====
         embbPktSizeMean
         embbPktSizeStd
         urllcPktSize
         mmtcPktSize
 
-        % Deadlines (slots)
-        urllcDeadline
-        mmtcDeadline
+        %% ===== Base deadlines (slots) =====
+        urllcDeadlineBase
+        mmtcDeadlineBase
 
-        % Burstiness (ON/OFF) per UE per service
+        %% ===== UE heterogeneity =====
+        profileType              % [numUE x 1] string: "eMBB"/"URLLC"/"mMTC"/"Mixed"
+        mixWeight                % [numUE x 3] weights [eMBB URLLC mMTC], normalized
+
+        rateScalePerUE           % [numUE x 1] scale factor for all rates
+        embbPktMeanPerUE         % [numUE x 1]
+        urllcDeadlinePerUE       % [numUE x 1] slots
+        urllcRateBoostPerUE      % [numUE x 1] extra multiplier for URLLC-heavy
+        embbRateBoostPerUE       % [numUE x 1]
+        mmtcRateBoostPerUE       % [numUE x 1]
+
+        %% ===== Burstiness =====
         enableBurst
-        onProb             % probability to remain ON
-        offProb            % probability to remain OFF
-        onState            % [numUE x 3] logical
+        onState                  % [numUE x 3] logical
+        meanOnSlot               % [1 x 3] mean ON duration in slots
+        meanOffSlot              % [1 x 3] mean OFF duration in slots
+        remainCounter            % [numUE x 3] remaining slots in current ON/OFF state
 
-        % Queue constraints
+        %% ===== Queue constraints =====
         maxBufferBitsPerUE
         maxPacketsPerUE
 
-        % Runtime
+        %% ===== Runtime =====
         slotNow
-        queues             % cell {numUE} of packet arrays
+        queues                   % cell {numUE} of packet arrays
 
-        % Stats (optional)
-        stats
+        %% ===== Stats (optional) =====
         enableStats
+        stats
     end
 
     methods
@@ -66,61 +74,114 @@ classdef TrafficModel
             addParameter(p, 'slotDuration', 1e-3);
             addParameter(p, 'enableBurst', true);
             addParameter(p, 'enableStats', true);
+
+            % profile ratios
+            addParameter(p, 'ratio_eMBB', 0.35);
+            addParameter(p, 'ratio_URLLC', 0.20);
+            addParameter(p, 'ratio_mMTC', 0.15);
+            % remaining -> Mixed
+
             parse(p, varargin{:});
 
             obj.numUE        = p.Results.numUE;
             obj.slotDuration = p.Results.slotDuration;
-
             obj.enableBurst  = p.Results.enableBurst;
             obj.enableStats  = p.Results.enableStats;
 
             obj.slotNow = 0;
 
-            % Base rates (pkts/sec)
-            obj.baseRate_embb  = 30;
-            obj.baseRate_urllc = 10;
-            obj.baseRate_mmtc  = 3;
+            %% ===== Baselines (you can tune later) =====
+            obj.baseRate_embb  = 200;
+            obj.baseRate_urllc = 50;
+            obj.baseRate_mmtc  = 20;
 
-            % Sizes
-            obj.embbPktSizeMean = 5e5;   % 0.5 Mbit mean (more reasonable than 1e6 baseline)
-            obj.embbPktSizeStd  = 2e5;   % variability
-            obj.urllcPktSize    = 3e4;   % 30 kbit
-            obj.mmtcPktSize     = 2e3;   % 2 kbit
+            obj.embbPktSizeMean = 5e5;
+            obj.embbPktSizeStd  = 2e5;
+            obj.urllcPktSize    = 3e4;
+            obj.mmtcPktSize     = 2e3;
 
-            % Deadlines
-            obj.urllcDeadline = 8;      % 8 ms if slot=1ms
-            obj.mmtcDeadline  = 200;    % relaxed
+            obj.urllcDeadlineBase = 8;
+            obj.mmtcDeadlineBase  = 200;
 
-            % Burst parameters (sticky ON/OFF)
-            obj.onProb  = 0.95;
-            obj.offProb = 0.90;
-
-            obj.onState = true(obj.numUE,3);
-
-            % Buffer limits
-            obj.maxBufferBitsPerUE = 20e6;   % 20 Mbits
+            %% ===== Queue limits =====
+            obj.maxBufferBitsPerUE = 20e6;
             obj.maxPacketsPerUE    = 2000;
 
-            % UE profiles: default mixed
+            %% ===== UE profile assignment =====
             obj.profileType = repmat("Mixed", obj.numUE, 1);
-            obj.mixWeight   = repmat([0.7 0.2 0.1], obj.numUE, 1);
 
-            % Example: make a few UEs special (can be configured later)
-            if obj.numUE >= 10
-                obj.profileType(1:4) = "eMBB";
-                obj.profileType(5:7) = "Mixed";
-                obj.profileType(8:9) = "URLLC";
-                obj.profileType(10)  = "mMTC";
-            end
+            nE = round(obj.numUE * p.Results.ratio_eMBB);
+            nU = round(obj.numUE * p.Results.ratio_URLLC);
+            nM = round(obj.numUE * p.Results.ratio_mMTC);
+            nX = obj.numUE - nE - nU - nM; %#ok<NASGU>
+
+            idx = randperm(obj.numUE);
+            i1 = 1;
+            i2 = i1 + nE - 1;
+            i3 = i2 + nU;
+            i4 = i3 + nM;
+
+            if nE > 0, obj.profileType(idx(i1:i2)) = "eMBB"; end
+            if nU > 0, obj.profileType(idx(i2+1:i3)) = "URLLC"; end
+            if nM > 0, obj.profileType(idx(i3+1:i4)) = "mMTC"; end
+            % rest are Mixed
+
+            obj.mixWeight = zeros(obj.numUE, 3);
             obj = obj.refreshMixWeightFromProfile();
 
-            % Init queues
-            obj.queues = cell(obj.numUE,1);
+            %% ===== UE-parameter heterogeneity =====
+            obj.rateScalePerUE      = obj.logNormalScale(obj.numUE, 0.0, 0.35); % mean~1, moderate spread
+            obj.embbPktMeanPerUE    = max(1e5, obj.embbPktSizeMean .* obj.logNormalScale(obj.numUE, 0.0, 0.25));
+            obj.urllcDeadlinePerUE  = obj.makeDeadlinePerUE();
+
+            obj.urllcRateBoostPerUE = ones(obj.numUE,1);
+            obj.embbRateBoostPerUE  = ones(obj.numUE,1);
+            obj.mmtcRateBoostPerUE  = ones(obj.numUE,1);
+
+            % Boost per profile (creates stable preference for xApps)
+            for u = 1:obj.numUE
+                t = obj.profileType(u);
+                if t == "URLLC"
+                    obj.urllcRateBoostPerUE(u) = 2.5;
+                    obj.embbRateBoostPerUE(u)  = 0.7;
+                elseif t == "eMBB"
+                    obj.embbRateBoostPerUE(u)  = 2.0;
+                    obj.urllcRateBoostPerUE(u) = 0.7;
+                elseif t == "mMTC"
+                    obj.mmtcRateBoostPerUE(u)  = 3.0;
+                    obj.embbRateBoostPerUE(u)  = 0.6;
+                end
+            end
+
+            %% ===== Burst model =====
+            obj.onState       = true(obj.numUE, 3);
+            obj.remainCounter = zeros(obj.numUE, 3);
+
+            % mean ON/OFF durations in slots (service-wise)
+            obj.meanOnSlot  = [60  30  200];  % eMBB less bursty, URLLC more spiky, mMTC long idle/active
+            obj.meanOffSlot = [40  50  500];
+
+            if obj.enableBurst
+                % initialize counters
+                for u = 1:obj.numUE
+                    for k = 1:3
+                        obj.onState(u,k) = (rand < 0.7);
+                        if obj.onState(u,k)
+                            obj.remainCounter(u,k) = obj.sampleGeomSlots(obj.meanOnSlot(k));
+                        else
+                            obj.remainCounter(u,k) = obj.sampleGeomSlots(obj.meanOffSlot(k));
+                        end
+                    end
+                end
+            end
+
+            %% ===== Queues =====
+            obj.queues = cell(obj.numUE, 1);
             for u = 1:obj.numUE
                 obj.queues{u} = [];
             end
 
-            % Stats
+            %% ===== Stats =====
             obj.stats = obj.initStats();
         end
 
@@ -131,48 +192,49 @@ classdef TrafficModel
 
             for u = 1:obj.numUE
 
-                % Update ON/OFF state if enabled
                 if obj.enableBurst
-                    obj.onState(u,:) = obj.updateOnOff(obj.onState(u,:));
+                    obj = obj.advanceBurst(u);
                 end
 
-                % Effective rates per UE (apply mix weights)
                 w = obj.mixWeight(u,:);
-                rate_embb  = obj.baseRate_embb  * w(1);
-                rate_urllc = obj.baseRate_urllc * w(2);
-                rate_mmtc  = obj.baseRate_mmtc  * w(3);
 
-                % Apply ON/OFF gating
+                % Base rates scaled by profile mix and UE scale
+                rateE = obj.baseRate_embb  * w(1) * obj.rateScalePerUE(u) * obj.embbRateBoostPerUE(u);
+                rateU = obj.baseRate_urllc * w(2) * obj.rateScalePerUE(u) * obj.urllcRateBoostPerUE(u);
+                rateM = obj.baseRate_mmtc  * w(3) * obj.rateScalePerUE(u) * obj.mmtcRateBoostPerUE(u);
+
+                % Burst gating (multiplicative)
                 if obj.enableBurst
-                    if ~obj.onState(u,1), rate_embb = rate_embb * 0.1; end
-                    if ~obj.onState(u,2), rate_urllc = rate_urllc * 0.2; end
-                    if ~obj.onState(u,3), rate_mmtc = rate_mmtc * 0.1; end
+                    if ~obj.onState(u,1), rateE = rateE * 0.05; end
+                    if ~obj.onState(u,2), rateU = rateU * 0.10; end
+                    if ~obj.onState(u,3), rateM = rateM * 0.05; end
                 end
 
-                % Poisson arrivals: number of packets in this slot
-                nE = obj.poissonCount(rate_embb  * obj.slotDuration);
-                nU = obj.poissonCount(rate_urllc * obj.slotDuration);
-                nM = obj.poissonCount(rate_mmtc  * obj.slotDuration);
+                % Poisson arrivals per slot
+                nE = obj.poissonCount(rateE * obj.slotDuration);
+                nU = obj.poissonCount(rateU * obj.slotDuration);
+                nM = obj.poissonCount(rateM * obj.slotDuration);
 
-                % Create packets
                 for k = 1:nE
-                    sz = max(1e4, obj.embbPktSizeMean + obj.embbPktSizeStd*randn());
+                    sz = max(1e4, obj.embbPktMeanPerUE(u) + obj.embbPktSizeStd*randn());
                     pkt = obj.createPacket(u, sz, inf, 'eMBB');
-                    obj = obj.enqueue(u, pkt);
+                    obj = obj.enqueueQoS(u, pkt);
                 end
+
                 for k = 1:nU
-                    pkt = obj.createPacket(u, obj.urllcPktSize, obj.urllcDeadline, 'URLLC');
-                    obj = obj.enqueue(u, pkt);
+                    dl = obj.urllcDeadlinePerUE(u);
+                    pkt = obj.createPacket(u, obj.urllcPktSize, dl, 'URLLC');
+                    obj = obj.enqueueQoS(u, pkt);
                 end
+
                 for k = 1:nM
-                    pkt = obj.createPacket(u, obj.mmtcPktSize, obj.mmtcDeadline, 'mMTC');
-                    obj = obj.enqueue(u, pkt);
+                    pkt = obj.createPacket(u, obj.mmtcPktSize, obj.mmtcDeadlineBase, 'mMTC');
+                    obj = obj.enqueueQoS(u, pkt);
                 end
             end
         end
 
         function obj = decreaseDeadline(obj)
-            % Decrease deadline and increase age
             for u = 1:obj.numUE
                 q = obj.queues{u};
                 if isempty(q), continue; end
@@ -188,7 +250,6 @@ classdef TrafficModel
         end
 
         function [obj, dropped] = dropExpired(obj)
-            % Drop packets whose deadline <= 0
             dropped = [];
             for u = 1:obj.numUE
                 q = obj.queues{u};
@@ -209,9 +270,7 @@ classdef TrafficModel
         end
 
         function [obj, servedBits] = serve(obj, ueId, bits)
-            %SERVE Serve bits for UE ueId, FIFO within UE.
             servedBits = 0;
-
             q = obj.queues{ueId};
 
             while bits > 0 && ~isempty(q)
@@ -223,7 +282,6 @@ classdef TrafficModel
                 bits = bits - take;
 
                 if q(1).size <= 0
-                    % packet complete -> stats
                     if obj.enableStats
                         obj = obj.updateServeStats(q(1));
                     end
@@ -245,46 +303,82 @@ classdef TrafficModel
             for u = 1:obj.numUE
                 t = obj.profileType(u);
                 if t == "eMBB"
-                    obj.mixWeight(u,:) = [0.9 0.08 0.02];
+                    obj.mixWeight(u,:) = [0.92 0.06 0.02];
                 elseif t == "URLLC"
-                    obj.mixWeight(u,:) = [0.2 0.75 0.05];
+                    obj.mixWeight(u,:) = [0.15 0.80 0.05];
                 elseif t == "mMTC"
-                    obj.mixWeight(u,:) = [0.1 0.05 0.85];
+                    obj.mixWeight(u,:) = [0.08 0.04 0.88];
                 else
-                    obj.mixWeight(u,:) = [0.7 0.2 0.1];
+                    obj.mixWeight(u,:) = [0.65 0.25 0.10];
                 end
             end
-            % normalize
-            s = sum(obj.mixWeight,2);
-            obj.mixWeight = obj.mixWeight ./ s;
+            s = sum(obj.mixWeight, 2);
+            obj.mixWeight = obj.mixWeight ./ max(s, 1e-12);
         end
 
-        function on = updateOnOff(obj, on)
-            % Sticky Markov ON/OFF per service
-            for k = 1:3
-                if on(k)
-                    % stay ON with onProb
-                    on(k) = (rand < obj.onProb);
+        function dl = makeDeadlinePerUE(obj)
+            % URLLC deadline per UE: URLLC-heavy gets tighter deadlines
+            dl = obj.urllcDeadlineBase * ones(obj.numUE,1);
+            for u = 1:obj.numUE
+                if obj.profileType(u) == "URLLC"
+                    dl(u) = max(3, round(obj.urllcDeadlineBase * 0.6));
+                elseif obj.profileType(u) == "eMBB"
+                    dl(u) = max(4, round(obj.urllcDeadlineBase * 1.1));
                 else
-                    % stay OFF with offProb
-                    on(k) = ~(rand < obj.offProb);
+                    dl(u) = obj.urllcDeadlineBase;
                 end
             end
+            % small randomness
+            dl = max(2, dl + randi([-1 1], obj.numUE, 1));
+        end
+
+        function obj = advanceBurst(obj, u)
+            for k = 1:3
+                obj.remainCounter(u,k) = obj.remainCounter(u,k) - 1;
+                if obj.remainCounter(u,k) <= 0
+                    % toggle state
+                    obj.onState(u,k) = ~obj.onState(u,k);
+                    if obj.onState(u,k)
+                        obj.remainCounter(u,k) = obj.sampleGeomSlots(obj.meanOnSlot(k));
+                    else
+                        obj.remainCounter(u,k) = obj.sampleGeomSlots(obj.meanOffSlot(k));
+                    end
+                end
+            end
+        end
+
+        function n = sampleGeomSlots(~, meanSlots)
+            % Geometric duration with given mean (>=1)
+            meanSlots = max(1, meanSlots);
+            p = 1 / meanSlots;
+            n = 1;
+            while rand > p
+                n = n + 1;
+                if n > 1e6
+                    break;
+                end
+            end
+        end
+
+        function s = logNormalScale(~, n, mu, sigma)
+            % lognormal with median exp(mu), moderate spread
+            s = exp(mu + sigma*randn(n,1));
         end
 
         function n = poissonCount(~, lambda)
-            % Poisson random count, lambda can be < 1
             if lambda <= 0
                 n = 0;
                 return;
             end
-            % Knuth algorithm for small lambda
             L = exp(-lambda);
             k = 0;
             p = 1;
             while p > L
                 k = k + 1;
                 p = p * rand;
+                if k > 10000
+                    break;
+                end
             end
             n = k - 1;
         end
@@ -298,39 +392,100 @@ classdef TrafficModel
             pkt.t0_slot  = obj.slotNow;
         end
 
-        function obj = enqueue(obj, ueId, pkt)
+        function obj = enqueueQoS(obj, ueId, pkt)
+            % QoS-aware enqueue with buffer limit:
+            % If buffer/qlen full, drop lower priority first.
+            % Priority: URLLC > eMBB > mMTC
 
             q = obj.queues{ueId};
 
-            % queue length limit
+            % qlen limit
             if numel(q) >= obj.maxPacketsPerUE
-                if obj.enableStats
-                    obj = obj.updateDropStats(pkt, "qlen");
+                [q, droppedPkt] = obj.evictOneForQoS(q, pkt);
+                if isempty(droppedPkt)
+                    % accept by evicting someone
+                    q = [q; pkt]; %#ok<AGROW>
+                    obj.queues{ueId} = q;
+                    if obj.enableStats, obj = obj.updateArrivalStats(pkt); end
+                else
+                    % cannot evict -> drop incoming
+                    if obj.enableStats, obj = obj.updateDropStats(pkt, "qlen"); end
                 end
                 return;
             end
 
             % buffer bits limit
             buf = 0;
-            if ~isempty(q)
-                buf = sum([q.size]);
-            end
+            if ~isempty(q), buf = sum([q.size]); end
+
             if buf + pkt.size > obj.maxBufferBitsPerUE
-                if obj.enableStats
-                    obj = obj.updateDropStats(pkt, "buffer");
+                [q, droppedPkt] = obj.evictOneForQoS(q, pkt);
+                if isempty(droppedPkt)
+                    q = [q; pkt]; %#ok<AGROW>
+                    obj.queues{ueId} = q;
+                    if obj.enableStats, obj = obj.updateArrivalStats(pkt); end
+                else
+                    if obj.enableStats, obj = obj.updateDropStats(pkt, "buffer"); end
                 end
                 return;
             end
 
+            % normal enqueue
             q = [q; pkt]; %#ok<AGROW>
             obj.queues{ueId} = q;
-
-            if obj.enableStats
-                obj = obj.updateArrivalStats(pkt);
-            end
+            if obj.enableStats, obj = obj.updateArrivalStats(pkt); end
         end
 
-        function s = initStats(obj) %#ok<MANU>
+        function [q, droppedPkt] = evictOneForQoS(~, q, incomingPkt)
+            % Try to evict a lower-priority packet to make room.
+            % Return droppedPkt if incoming is dropped. Return [] if eviction succeeded.
+
+            droppedPkt = incomingPkt;
+
+            if isempty(q)
+                return;
+            end
+
+            pri = @(t) localPri(t); %#ok<NASGU>
+
+            inP = localPri(incomingPkt.type);
+
+            % find a packet with lower priority (larger number means lower priority)
+            cand = [];
+            candP = [];
+
+            for i = 1:numel(q)
+                p = localPri(q(i).type);
+                if p > inP
+                    cand(end+1,1) = i; %#ok<AGROW>
+                    candP(end+1,1) = p; %#ok<AGROW>
+                end
+            end
+
+            if isempty(cand)
+                % no lower-priority packet to evict -> drop incoming
+                return;
+            end
+
+            % evict the lowest priority among candidates, if tie evict the largest packet
+            bestIdx = cand(1);
+            for k = 2:numel(cand)
+                i = cand(k);
+                if candP(k) > localPri(q(bestIdx).type)
+                    bestIdx = i;
+                elseif candP(k) == localPri(q(bestIdx).type)
+                    if q(i).size > q(bestIdx).size
+                        bestIdx = i;
+                    end
+                end
+            end
+
+            % evict q(bestIdx)
+            q(bestIdx) = [];
+            droppedPkt = []; % eviction succeeded
+        end
+
+        function s = initStats(~)
             s = struct();
             s.arrival = struct('eMBB',0,'URLLC',0,'mMTC',0);
             s.drop = struct();
@@ -343,16 +498,15 @@ classdef TrafficModel
         end
 
         function obj = updateArrivalStats(obj, pkt)
-            obj.stats.arrival.(pkt.type) = obj.stats.arrival.(pkt.type) + 1;
+            if isfield(obj.stats.arrival, pkt.type)
+                obj.stats.arrival.(pkt.type) = obj.stats.arrival.(pkt.type) + 1;
+            end
         end
 
         function obj = updateDropStats(obj, pkts, cause)
-            if ~isstruct(pkts)
-                return;
-            end
-            if numel(pkts) == 1
-                pkts = pkts(:);
-            end
+            if ~isstruct(pkts), return; end
+            pkts = pkts(:);
+
             for i = 1:numel(pkts)
                 t = pkts(i).type;
                 obj.stats.drop.total = obj.stats.drop.total + 1;
@@ -367,9 +521,23 @@ classdef TrafficModel
 
         function obj = updateServeStats(obj, pkt)
             t = pkt.type;
-            obj.stats.serve.completedPkts.(t) = obj.stats.serve.completedPkts.(t) + 1;
-            delay = pkt.age;
-            obj.stats.serve.delaySlotSum.(t) = obj.stats.serve.delaySlotSum.(t) + delay;
+            if isfield(obj.stats.serve.completedPkts, t)
+                obj.stats.serve.completedPkts.(t) = obj.stats.serve.completedPkts.(t) + 1;
+            end
+            if isfield(obj.stats.serve.delaySlotSum, t)
+                obj.stats.serve.delaySlotSum.(t) = obj.stats.serve.delaySlotSum.(t) + pkt.age;
+            end
         end
     end
+end
+
+function p = localPri(typeStr)
+% smaller is higher priority
+if strcmp(typeStr,'URLLC')
+    p = 1;
+elseif strcmp(typeStr,'eMBB')
+    p = 2;
+else
+    p = 3;
+end
 end

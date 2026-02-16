@@ -283,28 +283,35 @@ classdef NearRTRIC
         end
 
         function rawAction = applyControl(obj, rawAction, merged)
-            % Map merged.control -> RanActionBus fields
 
-            if ~isstruct(merged) || ~isfield(merged,'control') || ~isstruct(merged.control)
-                return;
-            end
-
-            control = merged.control;
             map = obj.getControlMap();
-
-            keys = fieldnames(control);
-
-            for i = 1:numel(keys)
-                key = keys{i};
-
-                if isfield(map, key)
-                    path = map.(key);
-                    rawAction = obj.setByPath(rawAction, path, control.(key));
-                elseif isfield(rawAction, key)
-                    rawAction.(key) = control.(key);
+        
+            % 1) new domains first: merged.scheduling -> rawAction.scheduling
+            if isfield(merged,'scheduling') && isstruct(merged.scheduling)
+                fn = fieldnames(merged.scheduling);
+                for i = 1:numel(fn)
+                    key = fn{i};
+                    rawAction.scheduling.(key) = merged.scheduling.(key);
+                end
+            end
+        
+            % 2) legacy control mapping: merged.control -> rawAction by map
+            if isfield(merged,'control') && isstruct(merged.control)
+                control = merged.control;
+                keys = fieldnames(control);
+                for i = 1:numel(keys)
+                    key = keys{i};
+                    if isfield(map, key)
+                        path = map.(key);
+                        rawAction = obj.setByPath(rawAction, path, control.(key));
+                    elseif isfield(rawAction, key)
+                        rawAction.(key) = control.(key);
+                    end
                 end
             end
         end
+
+
 
         function map = getControlMap(obj)
             % Default mapping + allow cfg override

@@ -1,13 +1,15 @@
 classdef SchedulerPRBModel
     properties
-        prbChunk    % PRB granularity
-        actionBoost % PRB share for selected UE
+        prbChunk        % PRB granularity
+        actionBoost     % PRB share for selected UE
+        maxUEPerCell    % max concurrent scheduled UE per cell per slot
     end
 
     methods
         function obj = SchedulerPRBModel()
-            obj.prbChunk    = 10;
-            obj.actionBoost = 0.6;
+            obj.prbChunk     = 10;
+            obj.actionBoost  = 0.6;
+            obj.maxUEPerCell = 2;   % <<< NEW: enforce contention
         end
 
         function ctx = step(obj, ctx)
@@ -15,7 +17,6 @@ classdef SchedulerPRBModel
             numCell = ctx.cfg.scenario.numCell;
             numUE   = ctx.cfg.scenario.numUE;
 
-            % Ensure fields exist (normally created by ctx.clearSlotTemp)
             if ~isfield(ctx.tmp,'scheduledUE')
                 ctx.tmp.scheduledUE = cell(numCell,1);
             end
@@ -36,22 +37,14 @@ classdef SchedulerPRBModel
                 end
 
                 % Filter HO-blocked UE
-                ok = true(size(ueSet));
-                for i = 1:numel(ueSet)
-                    u = ueSet(i);
-                    if ctx.slot < ctx.ueBlockedUntilSlot(u)
-                        ok(i) = false;
-                    end
-                end
-                ueSet = ueSet(ok);
-
+                ueSet = obj.filterHoBlockedUE(ctx, ueSet);
                 if isempty(ueSet)
                     ctx.tmp.scheduledUE{c} = [];
                     ctx.tmp.prbAlloc{c}    = [];
                     continue;
                 end
 
-                % Optional: filter empty buffer UE
+                % Filter empty buffer UE
                 ueSet = obj.filterEmptyBufferUE(ctx, ueSet);
                 if isempty(ueSet)
                     ctx.tmp.scheduledUE{c} = [];
@@ -60,21 +53,16 @@ classdef SchedulerPRBModel
                 end
 
                 % Action selected UE
-                selU = 0;
-                if ~isempty(ctx.action) && isfield(ctx.action,'scheduling') && ...
-                        isfield(ctx.action.scheduling,'selectedUE')
+                selU = obj.getSelectedUE(ctx, c, numUE, ueSet);
 
-                    sel = ctx.action.scheduling.selectedUE;
-                    if isvector(sel) && numel(sel) >= c
-                        v = round(sel(c));
-                        if v >= 1 && v <= numUE && any(ueSet == v)
-                            selU = v;
-                        end
-                    end
-                end
-
-                % Allocate PRB and update rrPtr through returned ctx
+                % Allocate PRB (RR + optional boost), and update rrPtr through ctx
                 [ctx, schedUE, prbAlloc] = obj.allocatePRB(ctx, c, ueSet, selU);
+
+                % Aggregate duplicate UE entries (RR chunk may hit same UE multiple times)
+                [schedUE, prbAlloc] = obj.aggregateAlloc(schedUE, prbAlloc);
+
+                % Enforce max concurrent UE per cell (contention knob)
+                [schedUE, prbAlloc] = obj.enforceMaxUE(schedUE, prbAlloc, selU);
 
                 ctx.tmp.scheduledUE{c} = schedUE(:);
                 ctx.tmp.prbAlloc{c}    = prbAlloc(:);
@@ -83,6 +71,17 @@ classdef SchedulerPRBModel
     end
 
     methods (Access = private)
+
+        function ueSet = filterHoBlockedUE(~, ctx, ueSet)
+            ok = true(size(ueSet));
+            for i = 1:numel(ueSet)
+                u = ueSet(i);
+                if ctx.slot < ctx.ueBlockedUntilSlot(u)
+                    ok(i) = false;
+                end
+            end
+            ueSet = ueSet(ok);
+        end
 
         function ueSet = filterEmptyBufferUE(~, ctx, ueSet)
             keep = false(size(ueSet));
@@ -94,11 +93,29 @@ classdef SchedulerPRBModel
             ueSet = ueSet(keep);
         end
 
+        function selU = getSelectedUE(~, ctx, c, numUE, ueSet)
+            selU = 0;
+
+            if isempty(ctx.action) || ~isfield(ctx.action,'scheduling') || ...
+                    ~isfield(ctx.action.scheduling,'selectedUE')
+                return;
+            end
+
+            sel = ctx.action.scheduling.selectedUE;
+            if ~isvector(sel) || numel(sel) < c
+                return;
+            end
+
+            v = round(sel(c));
+            if v >= 1 && v <= numUE && any(ueSet == v)
+                selU = v;
+            end
+        end
+
         function [ctx, schedUE, prbAlloc] = allocatePRB(obj, ctx, c, ueSet, selU)
 
             totalPRB = ctx.numPRB;
 
-            % If only one UE
             if numel(ueSet) == 1
                 schedUE  = ueSet(:);
                 prbAlloc = totalPRB;
@@ -152,6 +169,63 @@ classdef SchedulerPRBModel
             end
 
             ctx.rrPtr(c) = ptr;
+        end
+
+        function [ueList2, alloc2] = aggregateAlloc(~, ueList, alloc)
+            if isempty(ueList)
+                ueList2 = ueList;
+                alloc2  = alloc;
+                return;
+            end
+
+            % Preserve order of first appearance
+            ueList2 = [];
+            alloc2  = [];
+
+            for i = 1:numel(ueList)
+                u = ueList(i);
+                p = alloc(i);
+
+                j = find(ueList2 == u, 1);
+                if isempty(j)
+                    ueList2(end+1,1) = u; %#ok<AGROW>
+                    alloc2(end+1,1)  = p; %#ok<AGROW>
+                else
+                    alloc2(j) = alloc2(j) + p;
+                end
+            end
+        end
+
+        function [ueList, alloc] = enforceMaxUE(obj, ueList, alloc, selU)
+
+            if isempty(ueList)
+                return;
+            end
+
+            K = obj.maxUEPerCell;
+            if K <= 0
+                ueList = [];
+                alloc  = [];
+                return;
+            end
+
+            if numel(ueList) <= K
+                return;
+            end
+
+            % Ensure selected UE kept if present
+            if selU > 0
+                idxSel = find(ueList == selU, 1);
+                if ~isempty(idxSel)
+                    % Move selU to front
+                    ueList = [ueList(idxSel); ueList([1:idxSel-1, idxSel+1:end])];
+                    alloc  = [alloc(idxSel);  alloc([1:idxSel-1, idxSel+1:end])];
+                end
+            end
+
+            % Keep first K UEs, drop the rest (contention)
+            ueList = ueList(1:K);
+            alloc  = alloc(1:K);
         end
     end
 end

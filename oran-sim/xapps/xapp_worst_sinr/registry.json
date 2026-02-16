@@ -1,0 +1,28 @@
+{
+  "xapp_id": "xapp_worst_sinr",
+  "xapp_name": "Worst SINR Scheduler",
+  "xapp_version": "0.1",
+  "xapp_description": "Select worst SINR UE per cell to stress system",
+
+  "entry_point": "xapp_main",
+  "language": "matlab",
+  "execution_type": "periodic",
+
+  "control_parameters": [
+    {
+      "name": "selectedUE",
+      "type": "discrete",
+      "scope": "cell",
+      "path": "scheduling.selectedUE"
+    }
+  ],
+
+  "affected_kpis": [
+    {
+      "kpi_name": "throughput",
+      "effect": "negative"
+    }
+  ],
+
+  "dependencies": []
+}

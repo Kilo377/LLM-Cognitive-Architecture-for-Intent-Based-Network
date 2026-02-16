@@ -40,8 +40,8 @@ function result = run_ric()
     % Select xApps
     %% =========================================================
     xAppSet = [
-       % "xapp_fair_scheduler"
-         "xapp_urllc_priority"
+        "xapp_fair_scheduler"
+       %  "xapp_urllc_priority"
        %"xapp_worst_sinr"
     ];
 

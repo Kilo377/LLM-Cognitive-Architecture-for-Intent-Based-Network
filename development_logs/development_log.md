@@ -421,3 +421,11 @@ qos：调度权重控制
 rlf：RLF 参数控制
 
 beam：升级为可扩展结构
+
+## 20260216 xApp Conflict  
+
+已经根据Core的跟新修改RIC, xApp已经可以影响RAN, 接下来应该研究xApp Conflict
+现在的 ActionMerger 是：
+```
+后面的 xApp 覆盖前面的
+```

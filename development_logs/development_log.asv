@@ -447,5 +447,4 @@ RanActionBus.validate
    ↓
 Kernel / gNB
 ```
-这是在Core更新前的, `ObsAdapter.m`, 缺少观测变量;
- 
+这是在Core更新前的, `ObsAdapter.m`, 全面; 

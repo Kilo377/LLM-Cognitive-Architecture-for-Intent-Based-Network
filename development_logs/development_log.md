@@ -590,3 +590,15 @@ Exp             Thr(M)     Energy   SINR     MCS      BLER     DropR    HO      
 
 ```
 已经跟新几处offset重复问题, 但是仍然存在energy不敏感等状况, 接下来进行下一步修改 
+
+下一步可以：
+
+做 Energy–Throughput tradeoff 曲线
+
+做 Pareto frontier
+
+加入 sleep control 联合 energyScale
+
+引入 3GPP BS power model
+
+把 energy model 升级为 load-adaptive BS efficiency 模型

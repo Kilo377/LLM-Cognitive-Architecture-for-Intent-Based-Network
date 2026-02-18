@@ -167,7 +167,21 @@ classdef NearRTRIC
 
             %% map merged.control -> RanActionBus
             rawAction = RanActionBus.init(obj.cfg);
-            rawAction = obj.applyControl(rawAction, merged);
+
+            domains = fieldnames(rawAction);
+            
+            for di = 1:numel(domains)
+                d = domains{di};
+            
+                if isfield(merged, d) && isstruct(merged.(d))
+                    fn = fieldnames(merged.(d));
+                    for fi = 1:numel(fn)
+                        key = fn{fi};
+                        rawAction.(d).(key) = merged.(d).(key);
+                    end
+                end
+            end
+
 
             %% guard
             action = obj.actionGuard.guard(rawAction, state);

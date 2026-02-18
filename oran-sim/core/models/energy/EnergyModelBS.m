@@ -1,52 +1,62 @@
 classdef EnergyModelBS
-%ENERGYMODELBS Base-station energy model (system-level, realistic)
+%ENERGYMODELBS v2 Base-station energy model with policy knobs
 %
 % Reads:
-%   ctx.txPowerCell_dBm
-%   ctx.tmp.lastPRBUsedPerCell
-%   ctx.numPRB
 %   ctx.dt
-%   ctx.action.sleep.cellSleepState   (optional)
-%   ctx.tmp.events.hoOccured / pingPongCountInc / rlfOccured (optional)
+%   ctx.numPRB
+%   ctx.tmp.lastPRBUsedPerCell
+%   ctx.action.sleep.cellSleepState
+%   ctx.action.power.cellTxPowerOffset_dB
+%   ctx.action.energy.basePowerScale
+%   ctx.tmp.events (optional)
 %
 % Writes:
 %   ctx.accEnergyJPerCell
-%   ctx.tmp.energyWPerCell (optional for observability)
+%   ctx.tmp.energyWPerCell
 
     properties
-        % Base power (W) per cell when ON (dominant)
+        % Base power (W) per cell when ON
         P0_on_W
 
         % Sleep scaling for base power
         % sleepState: 0:on, 1:light, 2:deep
         P0_scale
 
-        % PA term
+        % PA term multiplier
         kPA
 
         % Load-dependent term
         kLoad_W
         loadGamma
 
-        % HO/RLF signaling energy (J per event)
+        % Event-driven signaling energy (J)
         E_ho_J
         E_pingpong_J
         E_rlf_J
+
+        % How energy.basePowerScale affects consumption
+        % applyToBase: base circuit power scaling
+        % applyToPA  : PA power scaling
+        applyToBase
+        applyToPA
     end
 
     methods
         function obj = EnergyModelBS()
-            % These defaults are "macro-ish". You can tune per scenario.
-            obj.P0_on_W   = 800;                 % dominant base power
-            obj.P0_scale  = [1.0 0.55 0.25];      % light/deep sleep saves energy
-            obj.kPA       = 4.0;                 % PA multiplier on Ptx_W
+            obj.P0_on_W   = 800;
+            obj.P0_scale  = [1.0 0.55 0.25];
 
-            obj.kLoad_W   = 120;                 % small load term
-            obj.loadGamma = 1.2;                 % mild nonlinearity
+            obj.kPA       = 4.0;
 
-            obj.E_ho_J       = 2.0;              % HO signaling energy
-            obj.E_pingpong_J = 1.0;              % extra if ping-pong
-            obj.E_rlf_J       = 5.0;              % RLF recovery cost
+            obj.kLoad_W   = 120;
+            obj.loadGamma = 1.2;
+
+            obj.E_ho_J       = 2.0;
+            obj.E_pingpong_J = 1.0;
+            obj.E_rlf_J       = 5.0;
+
+            obj.applyToBase = true;
+            obj.applyToPA   = true;
         end
 
         function ctx = step(obj, ctx)
@@ -61,14 +71,14 @@ classdef EnergyModelBS
             end
             ctx.tmp.energyWPerCell = zeros(numCell,1);
 
-            %% 1) load ratio (0..1)
+            %% 1) Load ratio (0..1)
             load = zeros(numCell,1);
             if isfield(ctx.tmp,'lastPRBUsedPerCell') && ctx.numPRB > 0
                 load = ctx.tmp.lastPRBUsedPerCell(:) ./ ctx.numPRB;
                 load = min(max(load,0),1);
             end
 
-            %% 2) sleep state
+            %% 2) Sleep scale
             sleepScale = ones(numCell,1);
             if ~isempty(ctx.action) && isfield(ctx.action,'sleep') && ...
                     isfield(ctx.action.sleep,'cellSleepState')
@@ -81,8 +91,29 @@ classdef EnergyModelBS
                 end
             end
 
-            %% 3) Tx power -> Ptx_W
+            %% 3) energy.basePowerScale (0.2..1.2 in validate)
+            energyScale = ones(numCell,1);
+            if ~isempty(ctx.action) && isfield(ctx.action,'energy') && ...
+                    isfield(ctx.action.energy,'basePowerScale')
+                s = ctx.action.energy.basePowerScale;
+                if isnumeric(s) && numel(s)==numCell
+                    energyScale = s(:);
+                end
+            end
+
+            %% 4) Tx power for PA energy
+            % Base Tx power per cell (dBm)
             txPower_dBm = ctx.txPowerCell_dBm * ones(numCell,1);
+
+            % If you want ActionApplier to provide a base override, honor it
+            if isfield(ctx.tmp,'txPowerBase_dBm')
+                tp = ctx.tmp.txPowerBase_dBm;
+                if isnumeric(tp) && numel(tp)==numCell
+                    txPower_dBm = tp(:);
+                end
+            end
+
+            % Add power offset
             if ~isempty(ctx.action) && isfield(ctx.action,'power') && ...
                     isfield(ctx.action.power,'cellTxPowerOffset_dB')
                 off = ctx.action.power.cellTxPowerOffset_dB;
@@ -90,21 +121,30 @@ classdef EnergyModelBS
                     txPower_dBm = txPower_dBm + off(:);
                 end
             end
+
+            %% 5) Convert to Watt
             Ptx_W = 10.^((txPower_dBm - 30)/10);
 
-            %% 4) Compute power per cell
+            %% 6) Compute components
             P0 = obj.P0_on_W * sleepScale;
+            if obj.applyToBase
+                P0 = P0 .* energyScale;
+            end
+
             Ppa = obj.kPA * Ptx_W;
+            if obj.applyToPA
+                Ppa = Ppa .* energyScale;
+            end
+
             Pld = obj.kLoad_W * (load .^ obj.loadGamma);
 
             P = P0 + Ppa + Pld;
 
-            %% 5) Integrate energy
+            %% 7) Integrate
             ctx.accEnergyJPerCell = ctx.accEnergyJPerCell + P * ctx.dt;
             ctx.tmp.energyWPerCell = P;
 
-            %% 6) Event-driven signaling energy
-            % HO events are UE-level. We charge fromCell and toCell equally if known.
+            %% 8) Event-driven signaling energy
             if isfield(ctx.tmp,'events') && ~isempty(ctx.tmp.events)
 
                 ev = ctx.tmp.events;
@@ -124,13 +164,13 @@ classdef EnergyModelBS
                 end
 
                 if isfield(ev,'pingPongCountInc') && ev.pingPongCountInc > 0
-                    % spread cost across all cells (simple)
                     ctx.accEnergyJPerCell = ctx.accEnergyJPerCell + ...
                         (obj.E_pingpong_J * ev.pingPongCountInc / numCell) * ones(numCell,1);
                 end
 
                 if isfield(ev,'rlfOccured') && ev.rlfOccured && ...
                    isfield(ev,'rlfFrom') && isfield(ev,'rlfTo')
+
                     fromC = ev.rlfFrom;
                     toC   = ev.rlfTo;
 

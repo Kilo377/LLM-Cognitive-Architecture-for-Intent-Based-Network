@@ -97,6 +97,14 @@ classdef PhyServiceModel
                     obj.phyMac = obj.phyMac.step(schedInfo, radioMeas);
 
                     bits = obj.phyMac.getServedBits(u);
+                    
+                    %---------------print--------------------------------------
+                    %if ctx.slot <= 5
+                    %    fprintf("Slot %d UE %d SINR %.2f MCS %d Bits %.0f\n", ...
+                    %        ctx.slot, u, ctx.sinr_dB(u), ...
+                    %        obj.phyMac.lastMCS(u), bits);
+                    %end
+
 
                     %% Feedback
                     ctx.tmp.lastBLERPerUE(u) = obj.phyMac.lastBLER(u);

@@ -9,7 +9,7 @@ classdef SchedulerPRBModel
         function obj = SchedulerPRBModel()
             obj.prbChunk     = 10;
             obj.actionBoost  = 0.6;
-            obj.maxUEPerCell = 2;   % <<< NEW: enforce contention
+            obj.maxUEPerCell = 4;   % <<< NEW: enforce contention
         end
 
         function ctx = step(obj, ctx)
@@ -26,6 +26,9 @@ classdef SchedulerPRBModel
 
             for c = 1:numCell
 
+     
+
+
                 % PRB total accounting
                 ctx.accPRBTotalPerCell(c) = ctx.accPRBTotalPerCell(c) + ctx.numPRB;
 
@@ -35,6 +38,13 @@ classdef SchedulerPRBModel
                     ctx.tmp.prbAlloc{c}    = [];
                     continue;
                 end
+
+
+                %------------------print-----------------------
+                %if ctx.slot <= 5
+                %    fprintf("Slot %d Cell %d UEset=%d\n", ...
+                 %       ctx.slot, c, numel(ueSet));
+                %end
 
                 % Filter HO-blocked UE
                 ueSet = obj.filterHoBlockedUE(ctx, ueSet);
@@ -66,6 +76,14 @@ classdef SchedulerPRBModel
 
                 ctx.tmp.scheduledUE{c} = schedUE(:);
                 ctx.tmp.prbAlloc{c}    = prbAlloc(:);
+
+
+                %------------------print-----------------------
+                %if ctx.slot <= 5
+                %    fprintf("Slot %d Cell %d scheduled=%d\n", ...
+                %        ctx.slot, c, numel(ctx.tmp.scheduledUE{c}));
+                %end
+
             end
         end
     end

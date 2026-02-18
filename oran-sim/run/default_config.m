@@ -10,7 +10,7 @@ function cfg = default_config()
 
     %% 场景参数（先占位）
     cfg.scenario.numCell = 4;
-    cfg.scenario.numUE   = 50;
+    cfg.scenario.numUE   = 30;
 
     %% xApp 相关
     cfg.xapp = struct();

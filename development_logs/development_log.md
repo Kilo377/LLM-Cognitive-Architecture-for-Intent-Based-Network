@@ -420,7 +420,7 @@ rlf：RLF 参数控制
 
 beam：升级为可扩展结构
 
-## 20260216 ActionMerger
+## 20260217 RIC升级
 `ActionMerger.m`负责把多个 xApp 的决策结果合并成一个统一的 RAN 动作结构，供 Near-RT RIC 下发到网络侧执行。
 
 已经根据Core的跟新修改RIC, xApp已经可以影响RAN, 接下来应该研究xApp Conflict
@@ -447,5 +447,78 @@ RanActionBus.validate
    ↓
 Kernel / gNB
 ```
-这是在Core更新前的, `ObsAdapter.m`, 缺少观测变量;
+这是在Core更新前的, `ObsAdapter.m`, 缺少观测变量; 更新后:
  
+🔎 现在 Obs 包含的全部可观测域
+```
+obs.time
+obs.topology
+obs.ue
+obs.cell
+obs.radio
+obs.channel
+obs.events
+obs.kpi
+obs.meta
+obs.ext
+```
+这是一个完整 near-RT 观测接口。这些是给xApp看的必要参数;
+
+回到设计中:
+
+这些参数分为两部分用:
+
+xApp设计: 需要知道可观测参数RanState, 选择控制参数RanAction, 并且补充期望影响的kpi, 并且写在registry.json方便遍历
+
+xApp选择(图推理算法): 需要知道有哪些xApp, 他们的控制参数, 以及影响的kpi ← 这些应该是从xApp这里得到的.
+
+目前的仿真架构, 控制参数有; xApp注册与规范有; 但是KPI做的还不是很全面
+所以优先更新一下kpi,
+随后简单做一个冲突冗余模块, 设计一下baseline, 
+就可以做图推理了,
+ 
+计划是跟新core/kpi:
+
+新增的 KPI 维度
+```
+类别	         新 KPI
+Capacity	throughput_avg_bps
+Capacity	throughput_edge5_bps
+Energy	        energy_eff_bit_per_J
+Resource	prbUtil_avg
+Mobility	hoRate_per_s
+Reliability	dropRatio
+Fairness	jainFairness
+```
+
+写一个run的程序, 
+分别控制目前所有的控制参数, 并且分析每一个对于当前网络所有kpi的影响, 从而可以设计一个表格
+
+更新为run_control_sensitivity_v2。它会额外打印：
+
+mean SINR
+
+mean MCS
+
+mean BLER
+
+dropRatio
+
+但是当前的run是不合理的, 网络的kpi应该在网络层打印, 
+run只是调取. 接下来, 我们还是应该修改网络本身, 并且
+增强kpi/
+
+✅ KPIModel v3（完整网络KPI版本）
+
+
+RanContext 新字段
+
+PhyServiceModel 修改点
+
+Scheduler 修改点
+
+KPIModel 完整代码
+
+finalize 修改版
+
+精简 run

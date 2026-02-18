@@ -1,33 +1,52 @@
-classdef ObsAdapter
-%OBSADAPTER Build xApp observation from RanStateBus (MVP)
+classdef ObsAdapter < handle
+%OBSADAPTER Standard full-state exposure layer (RIC v2)
+%
+% Principles:
+% - Full mirror of RanStateBus
+% - No filtering
+% - No transformation
+% - Safe default handling
 
     properties
         cfg
     end
 
     methods
+
         function obj = ObsAdapter(cfg)
             obj.cfg = cfg;
         end
 
         function obs = buildObs(obj, state) %#ok<INUSD>
+
             obs = struct();
 
-            obs.time_s = state.time.t_s;
+            %% ===== Core mirror =====
+            obs.time     = state.time;
+            obs.topology = state.topology;
+            obs.ue       = state.ue;
+            obs.cell     = state.cell;
 
-            obs.numUE   = state.topology.numUE;
-            obs.numCell = state.topology.numCell;
+            % 补充 radio（物理层全局参数）
+            if isfield(state,'radio')
+                obs.radio = state.radio;
+            else
+                obs.radio = struct();
+            end
 
-            obs.servingCell = state.ue.servingCell;
-            obs.sinr_dB      = state.ue.sinr_dB;
+            obs.channel  = state.channel;
+            obs.events   = state.events;
+            obs.kpi      = state.kpi;
 
-            obs.buffer_bits  = state.ue.buffer_bits;
-   
-            obs.urgent_pkts  = state.ue.urgent_pkts;
+            %% ===== RIC Meta =====
+            obs.meta = struct();
+            obs.meta.slot        = state.time.slot;
+            obs.meta.timestamp_s = state.time.t_s;
 
-            obs.minDeadline_slot = state.ue.minDeadline_slot; % 新增
-            % 预留：后面调度/功控/波束会用
-            obs.cqi = state.ue.cqi;
+            %% ===== Optional future extension bucket =====
+            % 允许后续追加字段而不破坏接口
+            obs.ext = struct();
+
         end
     end
 end

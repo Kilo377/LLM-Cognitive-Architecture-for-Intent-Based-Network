@@ -1,17 +1,5 @@
 classdef RanKernelNR
-%RANKERNELNR Modular NR system-level kernel
-%
-% Orchestrates:
-%   Mobility
-%   Traffic
-%   Beamforming
-%   Radio
-%   Handover + RLF
-%   Scheduler
-%   PHY
-%   Energy
-%   KPI
-%   State export
+%RANKERNELNR Modular NR system-level kernel (Action-aware version)
 
     properties
         cfg
@@ -29,6 +17,8 @@ classdef RanKernelNR
         phyModel
         energyModel
         kpiModel
+
+        actionApplierModel   % <<< NEW
     end
 
     methods
@@ -44,7 +34,7 @@ classdef RanKernelNR
             % Context
             obj.ctx = RanContext(cfg, scenario);
 
-            % Models (assume scenario already contains mobility/traffic)
+            % Models
             obj.mobilityModel  = scenario.mobility.model;
             obj.trafficModel   = scenario.traffic.model;
 
@@ -54,16 +44,18 @@ classdef RanKernelNR
             obj.schedulerModel = SchedulerPRBModel();
             obj.phyModel       = PhyServiceModel(cfg, scenario);
             obj.energyModel    = EnergyModelBS();
-            obj.kpiModel       = KPIModel(); % if you implemented it
+            obj.kpiModel       = KPIModel();
 
-            % Initial radio measurement + association
+            obj.actionApplierModel = ActionApplierModel();  % <<< NEW
+
+            % Initial radio + association
             obj.ctx = obj.radioModel.step(obj.ctx);
             obj.ctx = obj.hoModel.step(obj.ctx);
-
         end
 
+
         %% ===============================
-        % One slot step (baseline or action-aware)
+        % One slot step
         %% ===============================
         function obj = step(obj, action)
 
@@ -73,7 +65,9 @@ classdef RanKernelNR
 
             % ===== Slot advance =====
             obj.ctx = obj.ctx.nextSlot();
-            obj.ctx = obj.ctx.setAction(action);
+
+            % ===== Apply Action FIRST =====
+            obj.ctx = obj.actionApplierModel.step(obj.ctx, action);
 
             %% ===== 1. Mobility =====
             [obj.mobilityModel, pos2d] = ...
@@ -121,12 +115,10 @@ classdef RanKernelNR
             obj.ctx = obj.energyModel.step(obj.ctx);
 
             %% ===== 9. KPI =====
-            if ~isempty(obj.kpiModel)
-                obj.ctx = obj.kpiModel.step(obj.ctx);
-            end
-
+            obj.ctx = obj.kpiModel.step(obj.ctx);
 
         end
+
 
         %% ===============================
         % Get state for RIC
@@ -163,7 +155,7 @@ classdef RanKernelNR
                 s.ue.bler = obj.ctx.tmp.lastBLERPerUE;
             end
 
-            % buffer
+            %% Buffer
             buf = zeros(numUE,1);
             urg = zeros(numUE,1);
             minDL = inf(numUE,1);
@@ -183,7 +175,7 @@ classdef RanKernelNR
             s.ue.urgent_pkts      = urg;
             s.ue.minDeadline_slot = minDL;
 
-            %% cell
+            %% Cell
             s.cell.prbTotal = obj.ctx.numPRB * ones(numCell,1);
 
             if isfield(obj.ctx.tmp,'lastPRBUsedPerCell')
@@ -192,8 +184,13 @@ classdef RanKernelNR
                     s.cell.prbUsed ./ max(s.cell.prbTotal,1);
             end
 
-            s.cell.txPower_dBm = ...
-                obj.ctx.txPowerCell_dBm * ones(numCell,1);
+            % IMPORTANT: use effective txPower if modified
+            if isfield(obj.ctx.tmp,'txPowerBase_dBm')
+                s.cell.txPower_dBm = obj.ctx.tmp.txPowerBase_dBm;
+            else
+                s.cell.txPower_dBm = ...
+                    obj.ctx.txPowerCell_dBm * ones(numCell,1);
+            end
 
             s.cell.energy_J = obj.ctx.accEnergyJPerCell;
 
@@ -201,27 +198,12 @@ classdef RanKernelNR
                 s.cell.power_W = obj.ctx.tmp.energyWPerCell;
             end
 
-            %% events
-            s.events.handover.countTotal = obj.ctx.accHOCount;
+            %% Events
+            s.events.handover.countTotal   = obj.ctx.accHOCount;
             s.events.handover.pingPongCount = obj.ctx.accPingPongCount;
-            s.events.rlf.countTotal = obj.ctx.accRLFCount;
+            s.events.rlf.countTotal        = obj.ctx.accRLFCount;
 
-            if isfield(obj.ctx.tmp,'events')
-                ev = obj.ctx.tmp.events;
-
-                if isfield(ev,'lastHOue')
-                    s.events.handover.lastUE   = ev.lastHOue;
-                    s.events.handover.lastFrom = ev.lastHOfrom;
-                    s.events.handover.lastTo   = ev.lastHOto;
-                end
-                if isfield(ev,'rlfOccured') && ev.rlfOccured
-                    s.events.rlf.lastUE   = ev.rlfUE;
-                    s.events.rlf.lastFrom = ev.rlfFrom;
-                    s.events.rlf.lastTo   = ev.rlfTo;
-                end
-            end
-
-            %% kpi
+            %% KPI
             s.kpi.throughputBitPerUE = obj.ctx.accThroughputBitPerUE;
             s.kpi.dropTotal          = obj.ctx.accDroppedTotal;
             s.kpi.dropURLLC          = obj.ctx.accDroppedURLLC;
@@ -230,6 +212,7 @@ classdef RanKernelNR
 
             state = s;
         end
+
 
         %% ===============================
         % Final report

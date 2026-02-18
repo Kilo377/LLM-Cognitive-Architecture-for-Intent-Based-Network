@@ -504,4 +504,39 @@ mean BLER
 
 dropRatio
 
-它会更容易定位哪个控制生效。
+但是当前的run是不合理的, 网络的kpi应该在网络层打印, 
+run只是调取. 接下来, 我们还是应该修改网络本身, 并且
+增强kpi/
+
+✅ KPIModel v3（完整网络KPI版本）
+
+
+RanContext 新字段
+
+PhyServiceModel 修改点
+
+Scheduler 修改点
+
+KPIModel 完整代码
+
+finalize 修改版
+
+精简 run
+
+更新计划为:
+core/
+
+1. core/RanContext.m（新增 KPI 累加器与基线字段）
+
+2. core/RanKernelNR.m（加入 ActionApplier，补齐 KPI 流水线，finalize 走 KPIModel）
+
+3. core/kpi/KPIModel.m（升级为 KPIModel v3，全网 KPI 统一在这里算）
+
+models/
+
+4) models/ActionApplierModel.m（修正 basePRB 的存放位置，避免每 slot 丢失）
+5) models/PhyServiceModel.m（累加 MCS/BLER/TB 计数，修正 lastPRBUsedPerCell 的缺口）
+6) models/SchedulerPRBModel.m（睡眠门控，写入每 slot 的调度统计）
+7) models/EnergyModelBS.m（读取 basePowerScale，读取 sleep，读取事件能耗）
+
+现存的 SchedulerModel.m是上一个版本了，建议不要再用它。只用 SchedulerPRBModel()。

@@ -9,7 +9,7 @@ classdef SchedulerPRBModel
         function obj = SchedulerPRBModel()
             obj.prbChunk     = 10;
             obj.actionBoost  = 0.6;
-            obj.maxUEPerCell = 4;   % <<< NEW: enforce contention
+            obj.maxUEPerCell = 4;   % contention knob
         end
 
         function ctx = step(obj, ctx)
@@ -17,40 +17,54 @@ classdef SchedulerPRBModel
             numCell = ctx.cfg.scenario.numCell;
             numUE   = ctx.cfg.scenario.numUE;
 
-            if ~isfield(ctx.tmp,'scheduledUE')
-                ctx.tmp.scheduledUE = cell(numCell,1);
-            end
-            if ~isfield(ctx.tmp,'prbAlloc')
-                ctx.tmp.prbAlloc = cell(numCell,1);
+            % Always init per-slot tmp containers
+            ctx.tmp.scheduledUE = cell(numCell,1);
+            ctx.tmp.prbAlloc    = cell(numCell,1);
+
+            % --- NEW: export per-slot cell-level scheduler observability ---
+            if ~isfield(ctx.tmp,'cell'), ctx.tmp.cell = struct(); end
+            ctx.tmp.cell.prbTotal = ctx.numPRB * ones(numCell,1);
+            ctx.tmp.cell.prbUsed  = zeros(numCell,1);
+            ctx.tmp.cell.schedUECount = zeros(numCell,1);
+
+            % Optional: sleep gating (ActionApplier may set this)
+            cellIsSleeping = false(numCell,1);
+            if isfield(ctx.tmp,'cellIsSleeping') && isnumeric(ctx.tmp.cellIsSleeping)
+                cellIsSleeping = logical(ctx.tmp.cellIsSleeping(:));
+                if numel(cellIsSleeping) ~= numCell
+                    cellIsSleeping = false(numCell,1);
+                end
             end
 
             for c = 1:numCell
 
-     
-
-
-                % PRB total accounting
+                % If sleeping, schedule nothing but still account PRB total for fairness
                 ctx.accPRBTotalPerCell(c) = ctx.accPRBTotalPerCell(c) + ctx.numPRB;
+
+                if cellIsSleeping(c)
+                    ctx.tmp.scheduledUE{c} = [];
+                    ctx.tmp.prbAlloc{c}    = [];
+                    ctx.tmp.cell.prbUsed(c) = 0;
+                    ctx.tmp.cell.schedUECount(c) = 0;
+                    continue;
+                end
 
                 ueSet = find(ctx.servingCell == c);
                 if isempty(ueSet)
                     ctx.tmp.scheduledUE{c} = [];
                     ctx.tmp.prbAlloc{c}    = [];
+                    ctx.tmp.cell.prbUsed(c) = 0;
+                    ctx.tmp.cell.schedUECount(c) = 0;
                     continue;
                 end
-
-
-                %------------------print-----------------------
-                %if ctx.slot <= 5
-                %    fprintf("Slot %d Cell %d UEset=%d\n", ...
-                 %       ctx.slot, c, numel(ueSet));
-                %end
 
                 % Filter HO-blocked UE
                 ueSet = obj.filterHoBlockedUE(ctx, ueSet);
                 if isempty(ueSet)
                     ctx.tmp.scheduledUE{c} = [];
                     ctx.tmp.prbAlloc{c}    = [];
+                    ctx.tmp.cell.prbUsed(c) = 0;
+                    ctx.tmp.cell.schedUECount(c) = 0;
                     continue;
                 end
 
@@ -59,30 +73,40 @@ classdef SchedulerPRBModel
                 if isempty(ueSet)
                     ctx.tmp.scheduledUE{c} = [];
                     ctx.tmp.prbAlloc{c}    = [];
+                    ctx.tmp.cell.prbUsed(c) = 0;
+                    ctx.tmp.cell.schedUECount(c) = 0;
                     continue;
                 end
 
                 % Action selected UE
                 selU = obj.getSelectedUE(ctx, c, numUE, ueSet);
 
-                % Allocate PRB (RR + optional boost), and update rrPtr through ctx
+                % Allocate PRB (RR + optional boost), update rrPtr
                 [ctx, schedUE, prbAlloc] = obj.allocatePRB(ctx, c, ueSet, selU);
 
-                % Aggregate duplicate UE entries (RR chunk may hit same UE multiple times)
+                % Aggregate duplicate UE entries
                 [schedUE, prbAlloc] = obj.aggregateAlloc(schedUE, prbAlloc);
 
-                % Enforce max concurrent UE per cell (contention knob)
+                % Enforce max concurrent UE per cell
                 [schedUE, prbAlloc] = obj.enforceMaxUE(schedUE, prbAlloc, selU);
 
+                % Finalize
                 ctx.tmp.scheduledUE{c} = schedUE(:);
                 ctx.tmp.prbAlloc{c}    = prbAlloc(:);
 
+                % --- NEW: per-slot cell metrics for state bus ---
+                prbUsed = sum(prbAlloc);
+                prbUsed = min(max(prbUsed,0), ctx.numPRB);
 
-                %------------------print-----------------------
-                %if ctx.slot <= 5
-                %    fprintf("Slot %d Cell %d scheduled=%d\n", ...
-                %        ctx.slot, c, numel(ctx.tmp.scheduledUE{c}));
-                %end
+                ctx.tmp.cell.prbUsed(c) = prbUsed;
+                ctx.tmp.cell.schedUECount(c) = numel(schedUE);
+
+                % 让 RanContext.updateStateBus 能看到 PRB 用量
+                %（PHY 也会写 lastPRBUsedPerCell，但这里可用于"调度层是否生效"的诊断）
+                if ~isfield(ctx.tmp,'lastPRBUsedPerCell')
+                    ctx.tmp.lastPRBUsedPerCell = zeros(numCell,1);
+                end
+                ctx.tmp.lastPRBUsedPerCell(c) = prbUsed;
 
             end
         end
@@ -94,7 +118,7 @@ classdef SchedulerPRBModel
             ok = true(size(ueSet));
             for i = 1:numel(ueSet)
                 u = ueSet(i);
-                if ctx.slot < ctx.ueBlockedUntilSlot(u)
+                if isfield(ctx,'ueBlockedUntilSlot') && ctx.slot < ctx.ueBlockedUntilSlot(u)
                     ok(i) = false;
                 end
             end
@@ -196,7 +220,6 @@ classdef SchedulerPRBModel
                 return;
             end
 
-            % Preserve order of first appearance
             ueList2 = [];
             alloc2  = [];
 
@@ -235,15 +258,19 @@ classdef SchedulerPRBModel
             if selU > 0
                 idxSel = find(ueList == selU, 1);
                 if ~isempty(idxSel)
-                    % Move selU to front
                     ueList = [ueList(idxSel); ueList([1:idxSel-1, idxSel+1:end])];
                     alloc  = [alloc(idxSel);  alloc([1:idxSel-1, idxSel+1:end])];
                 end
             end
 
-            % Keep first K UEs, drop the rest (contention)
             ueList = ueList(1:K);
             alloc  = alloc(1:K);
+
+            % Optional: if we drop users, rescale PRB to keep sum<=total
+            s = sum(alloc);
+            if s > 0
+                % keep as-is; sum already <= totalPRB by construction
+            end
         end
     end
 end

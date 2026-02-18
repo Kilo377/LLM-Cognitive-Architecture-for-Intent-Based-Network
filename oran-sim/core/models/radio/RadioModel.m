@@ -94,7 +94,13 @@ classdef RadioModel < handle
             %% =====================================================
             % 2. Tx power baseline
             %% =====================================================
-            txPower_dBm = ctx.txPowerCell_dBm * ones(numCell,1);
+            txPower_dBm = ctx.txPowerCell_dBm;
+            if isscalar(txPower_dBm)
+                txPower_dBm = txPower_dBm * ones(numCell,1);
+            else
+                txPower_dBm = txPower_dBm(:);
+            end
+
 
             % energy scaling -> change Tx baseline
             if ~isempty(ctx.action) && isfield(ctx.action,'energy') && ...

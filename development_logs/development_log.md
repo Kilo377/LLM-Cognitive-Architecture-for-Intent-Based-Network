@@ -522,3 +522,21 @@ KPIModel 完整代码
 finalize 修改版
 
 精简 run
+
+更新计划为:
+core/
+
+1) [✓]core/RanContext.m（新增 KPI 累加器与基线字段）
+
+2) core/RanKernelNR.m（加入 ActionApplier，补齐 KPI 流水线，finalize 走 KPIModel）
+
+3) [✓]core/kpi/KPIModel.m（升级为 KPIModel v3，全网 KPI 统一在这里算）
+
+models/
+
+4) [✓]models/ActionApplierModel.m（修正 basePRB 的存放位置，避免每 slot 丢失）
+5) [✓]models/PhyServiceModel.m（累加 MCS/BLER/TB 计数，修正 lastPRBUsedPerCell 的缺口）
+6) [✓]models/SchedulerPRBModel.m（睡眠门控，写入每 slot 的调度统计）
+7) [✓]models/EnergyModelBS.m（读取 basePowerScale，读取 sleep，读取事件能耗）
+
+现存的 SchedulerModel.m是上一个版本了，已经删除。只用 SchedulerPRBModel()。

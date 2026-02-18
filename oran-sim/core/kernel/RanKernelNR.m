@@ -1,5 +1,9 @@
 classdef RanKernelNR
 %RANKERNELNR Modular NR system-level kernel (Action-aware version)
+%
+% Key changes:
+% 1) After KPI step, publish ctx.state via ctx.updateStateBus()
+% 2) getState() returns ctx.state directly (no re-init / no recompute)
 
     properties
         cfg
@@ -18,7 +22,7 @@ classdef RanKernelNR
         energyModel
         kpiModel
 
-        actionApplierModel   % <<< NEW
+        actionApplierModel
     end
 
     methods
@@ -46,11 +50,14 @@ classdef RanKernelNR
             obj.energyModel    = EnergyModelBS();
             obj.kpiModel       = KPIModel();
 
-            obj.actionApplierModel = ActionApplierModel();  % <<< NEW
+            obj.actionApplierModel = ActionApplierModel();
 
             % Initial radio + association
             obj.ctx = obj.radioModel.step(obj.ctx);
             obj.ctx = obj.hoModel.step(obj.ctx);
+
+            % Publish initial state
+            obj.ctx = obj.ctx.updateStateBus();
         end
 
 
@@ -66,32 +73,26 @@ classdef RanKernelNR
             % ===== Slot advance =====
             obj.ctx = obj.ctx.nextSlot();
 
-            % ===== Apply Action FIRST =====
+            % ===== Apply action FIRST =====
             obj.ctx = obj.actionApplierModel.step(obj.ctx, action);
 
             %% ===== 1. Mobility =====
-            [obj.mobilityModel, pos2d] = ...
-                obj.mobilityModel.step(obj.ctx.dt);
-
+            [obj.mobilityModel, pos2d] = obj.mobilityModel.step(obj.ctx.dt);
             obj.ctx.uePos(:,1:2) = pos2d;
 
             %% ===== 2. Traffic =====
             obj.trafficModel = obj.trafficModel.step();
             obj.trafficModel = obj.trafficModel.decreaseDeadline();
-            [obj.trafficModel, dropped] = ...
-                obj.trafficModel.dropExpired();
+            [obj.trafficModel, dropped] = obj.trafficModel.dropExpired();
 
             obj.ctx.scenario.traffic.model = obj.trafficModel;
 
             if ~isempty(dropped)
-                obj.ctx.accDroppedTotal = ...
-                    obj.ctx.accDroppedTotal + numel(dropped);
+                obj.ctx.accDroppedTotal = obj.ctx.accDroppedTotal + numel(dropped);
 
                 for i = 1:numel(dropped)
-                    if dropped(i).type == "URLLC" || ...
-                       strcmp(dropped(i).type,'URLLC')
-                        obj.ctx.accDroppedURLLC = ...
-                            obj.ctx.accDroppedURLLC + 1;
+                    if dropped(i).type == "URLLC" || strcmp(dropped(i).type,'URLLC')
+                        obj.ctx.accDroppedURLLC = obj.ctx.accDroppedURLLC + 1;
                     end
                 end
             end
@@ -117,6 +118,8 @@ classdef RanKernelNR
             %% ===== 9. KPI =====
             obj.ctx = obj.kpiModel.step(obj.ctx);
 
+            %% ===== 10. Publish state bus =====
+            obj.ctx = obj.ctx.updateStateBus();
         end
 
 
@@ -124,93 +127,9 @@ classdef RanKernelNR
         % Get state for RIC
         %% ===============================
         function state = getState(obj)
-
-            state = RanStateBus.init(obj.cfg);
-
-            numUE   = obj.cfg.scenario.numUE;
-            numCell = obj.cfg.scenario.numCell;
-
-            s = state;
-
-            %% time
-            s.time.slot = obj.ctx.slot;
-            s.time.t_s  = obj.ctx.slot * obj.ctx.dt;
-
-            %% topology
-            s.topology.gNBPos = obj.scenario.topology.gNBPos;
-
-            %% UE
-            s.ue.pos         = obj.ctx.uePos;
-            s.ue.servingCell = obj.ctx.servingCell;
-            s.ue.sinr_dB     = obj.ctx.sinr_dB;
-            s.ue.rsrp_dBm    = obj.ctx.rsrp_dBm;
-
-            if isfield(obj.ctx.tmp,'lastCQIPerUE')
-                s.ue.cqi = obj.ctx.tmp.lastCQIPerUE;
-            end
-            if isfield(obj.ctx.tmp,'lastMCSPerUE')
-                s.ue.mcs = obj.ctx.tmp.lastMCSPerUE;
-            end
-            if isfield(obj.ctx.tmp,'lastBLERPerUE')
-                s.ue.bler = obj.ctx.tmp.lastBLERPerUE;
-            end
-
-            %% Buffer
-            buf = zeros(numUE,1);
-            urg = zeros(numUE,1);
-            minDL = inf(numUE,1);
-
-            for u = 1:numUE
-                q = obj.trafficModel.getQueue(u);
-                if isempty(q), continue; end
-                buf(u) = sum([q.size]);
-                d = [q.deadline];
-                urg(u) = sum(isfinite(d) & d <= 5);
-                if any(isfinite(d))
-                    minDL(u) = min(d(isfinite(d)));
-                end
-            end
-
-            s.ue.buffer_bits      = buf;
-            s.ue.urgent_pkts      = urg;
-            s.ue.minDeadline_slot = minDL;
-
-            %% Cell
-            s.cell.prbTotal = obj.ctx.numPRB * ones(numCell,1);
-
-            if isfield(obj.ctx.tmp,'lastPRBUsedPerCell')
-                s.cell.prbUsed = obj.ctx.tmp.lastPRBUsedPerCell;
-                s.cell.prbUtil = ...
-                    s.cell.prbUsed ./ max(s.cell.prbTotal,1);
-            end
-
-            % IMPORTANT: use effective txPower if modified
-            if isfield(obj.ctx.tmp,'txPowerBase_dBm')
-                s.cell.txPower_dBm = obj.ctx.tmp.txPowerBase_dBm;
-            else
-                s.cell.txPower_dBm = ...
-                    obj.ctx.txPowerCell_dBm * ones(numCell,1);
-            end
-
-            s.cell.energy_J = obj.ctx.accEnergyJPerCell;
-
-            if isfield(obj.ctx.tmp,'energyWPerCell')
-                s.cell.power_W = obj.ctx.tmp.energyWPerCell;
-            end
-
-            %% Events
-            s.events.handover.countTotal   = obj.ctx.accHOCount;
-            s.events.handover.pingPongCount = obj.ctx.accPingPongCount;
-            s.events.rlf.countTotal        = obj.ctx.accRLFCount;
-
-            %% KPI
-            s.kpi.throughputBitPerUE = obj.ctx.accThroughputBitPerUE;
-            s.kpi.dropTotal          = obj.ctx.accDroppedTotal;
-            s.kpi.dropURLLC          = obj.ctx.accDroppedURLLC;
-            s.kpi.handoverCount      = obj.ctx.accHOCount;
-            s.kpi.energyJPerCell     = obj.ctx.accEnergyJPerCell;
-
-            state = s;
+            % Ensure latest publish (safe even if already published in step)
+            obj.ctx = obj.ctx.updateStateBus();
+            state = obj.ctx.state;
         end
 
 
@@ -221,8 +140,7 @@ classdef RanKernelNR
 
             T = obj.cfg.sim.slotPerEpisode * obj.ctx.dt;
 
-            report.throughput_bps_total = ...
-                sum(obj.ctx.accThroughputBitPerUE) / T;
+            report.throughput_bps_total = sum(obj.ctx.accThroughputBitPerUE) / max(T,1e-12);
 
             report.handover_count = obj.ctx.accHOCount;
             report.rlf_count      = obj.ctx.accRLFCount;
@@ -233,8 +151,7 @@ classdef RanKernelNR
             report.energy_J_total = sum(obj.ctx.accEnergyJPerCell);
 
             report.energy_eff_bit_per_J = ...
-                sum(obj.ctx.accThroughputBitPerUE) / ...
-                max(report.energy_J_total,1e-9);
+                sum(obj.ctx.accThroughputBitPerUE) / max(report.energy_J_total,1e-9);
         end
     end
 end

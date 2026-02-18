@@ -6,18 +6,7 @@ classdef PhyServiceModel
 %   - Call NrPhyMacAdapter
 %   - Serve traffic queue
 %   - Update throughput / PRB usage
-%   - Provide per-slot served bits for PF scheduler
-%
-% Inputs (from ctx.tmp):
-%   scheduledUE{c}
-%   prbAlloc{c}
-%
-% Outputs (to ctx.tmp):
-%   lastCQIPerUE
-%   lastMCSPerUE
-%   lastBLERPerUE
-%   lastPRBUsedPerCell
-%   lastServedBitsPerUE
+%   - Update network KPI accumulators in RanContext
 
     properties
         phyMac
@@ -37,21 +26,19 @@ classdef PhyServiceModel
             % Initialize per-slot tmp fields
             %% ===============================
 
-            if ~isfield(ctx.tmp,'lastCQIPerUE')
-                ctx.tmp.lastCQIPerUE = zeros(numUE,1);
-            end
-            if ~isfield(ctx.tmp,'lastMCSPerUE')
-                ctx.tmp.lastMCSPerUE = zeros(numUE,1);
-            end
-            if ~isfield(ctx.tmp,'lastBLERPerUE')
-                ctx.tmp.lastBLERPerUE = zeros(numUE,1);
-            end
-            if ~isfield(ctx.tmp,'lastPRBUsedPerCell')
-                ctx.tmp.lastPRBUsedPerCell = zeros(numCell,1);
-            end
-            if ~isfield(ctx.tmp,'lastServedBitsPerUE')
-                ctx.tmp.lastServedBitsPerUE = zeros(numUE,1);
-            end
+            ctx.tmp.lastCQIPerUE        = zeros(numUE,1);
+            ctx.tmp.lastMCSPerUE        = zeros(numUE,1);
+            ctx.tmp.lastBLERPerUE       = zeros(numUE,1);
+            ctx.tmp.lastPRBUsedPerCell  = zeros(numCell,1);
+            ctx.tmp.lastServedBitsPerUE = zeros(numUE,1);
+
+            %% ===============================
+            % --- NEW: slot KPI temp accum ---
+            %% ===============================
+
+            slotSinrVec = ctx.sinr_dB;   % 全 UE SINR
+            slotMcsVec  = zeros(numUE,1);
+            slotBlerVec = zeros(numUE,1);
 
             %% ===============================
             % Loop over cells
@@ -93,25 +80,21 @@ classdef PhyServiceModel
 
                     radioMeas.sinr_dB = ctx.sinr_dB(u);
 
-                    %% PHY step (HARQ handled internally)
+                    %% PHY step
                     obj.phyMac = obj.phyMac.step(schedInfo, radioMeas);
 
                     bits = obj.phyMac.getServedBits(u);
-                    
-                    %---------------print--------------------------------------
-                    %if ctx.slot <= 5
-                    %    fprintf("Slot %d UE %d SINR %.2f MCS %d Bits %.0f\n", ...
-                    %        ctx.slot, u, ctx.sinr_dB(u), ...
-                    %        obj.phyMac.lastMCS(u), bits);
-                    %end
-
 
                     %% Feedback
-                    ctx.tmp.lastBLERPerUE(u) = obj.phyMac.lastBLER(u);
-                    ctx.tmp.lastMCSPerUE(u)  = obj.phyMac.lastMCS(u);
+                    mcsVal  = obj.phyMac.lastMCS(u);
+                    blerVal = obj.phyMac.lastBLER(u);
 
-                    % CQI approximate (for state bus visibility)
+                    ctx.tmp.lastBLERPerUE(u) = blerVal;
+                    ctx.tmp.lastMCSPerUE(u)  = mcsVal;
                     ctx.tmp.lastCQIPerUE(u)  = localSinrToCQI(ctx.sinr_dB(u));
+
+                    slotMcsVec(u)  = mcsVal;
+                    slotBlerVec(u) = blerVal;
 
                     %% Serve traffic queue
                     [ctx.scenario.traffic.model, served] = ...
@@ -134,9 +117,33 @@ classdef PhyServiceModel
                     end
                 end
             end
+
+            %% ===============================
+            % --- NEW: Accumulate KPI to Context ---
+            %% ===============================
+
+            % SINR (all UE)
+            ctx = ctx.accSinr(slotSinrVec);
+
+            % MCS (only scheduled UE have nonzero)
+            validMcs = slotMcsVec(slotMcsVec > 0);
+            if ~isempty(validMcs)
+                ctx = ctx.accMcs(validMcs);
+            end
+
+            % BLER (scheduled UE)
+            validBler = slotBlerVec(slotMcsVec > 0);
+            if ~isempty(validBler)
+                ctx = ctx.accBler(validBler);
+            end
+
+            % PRB used per slot
+            ctx = ctx.accPrbUsedSlot(ctx.tmp.lastPRBUsedPerCell);
+
         end
     end
 end
+
 
 %% ==========================================
 % Local helper
@@ -148,4 +155,3 @@ function cqi = localSinrToCQI(sinr_dB)
     if isempty(cqi), cqi = 15; end
     cqi = max(min(cqi,15),1);
 end
-

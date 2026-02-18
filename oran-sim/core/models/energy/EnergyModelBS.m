@@ -1,39 +1,39 @@
 classdef EnergyModelBS
-% ENERGYMODELBS v4 (Unified & Stable)
+% ENERGYMODELBS v5.2 (Final stable, no isfield misuse)
 %
-% Reads:
-%   ctx.dt
+% Control source (PERSISTENT):
+%   ctx.ctrl.basePowerScale
+%   ctx.ctrl.cellSleepState
+%
+% Runtime source:
 %   ctx.txPowerCell_dBm
-%   ctx.tmp.cell.prbUsed
-%   ctx.tmp.cell.prbTotal
-%   ctx.tmp.basePowerScale
-%   ctx.action.sleep.cellSleepState
+%   ctx.numPRBPerCell
+%   ctx.tmp.lastPRBUsedPerCell
 %
 % Writes:
 %   ctx.accEnergyJPerCell
 %   ctx.tmp.energyWPerCell
 %   ctx.tmp.cell.power_W
+%
+% Rules:
+%   - NEVER read ctx.action
+%   - NEVER use isfield(ctx,'ctrl')
+%   - ctrl is guaranteed by RanContext constructor
+%
 
     properties
-        % Base power when ON
         P0_on_W
-
-        % Sleep scaling (state 0/1/2)
         P0_scale
 
-        % PA multiplier
         kPA
 
-        % Load dependent term
         kLoad_W
         loadGamma
 
-        % Event signaling energy
         E_ho_J
         E_pingpong_J
         E_rlf_J
 
-        % Control flags
         applyToBase
         applyToPA
     end
@@ -42,12 +42,12 @@ classdef EnergyModelBS
 
         function obj = EnergyModelBS()
 
-            obj.P0_on_W  = 800;
-            obj.P0_scale = [1.0 0.55 0.25];
+            obj.P0_on_W   = 800;
+            obj.P0_scale  = [1.0 0.55 0.25];
 
-            obj.kPA      = 4.0;
+            obj.kPA       = 4.0;
 
-            obj.kLoad_W  = 120;
+            obj.kLoad_W   = 120;
             obj.loadGamma = 1.2;
 
             obj.E_ho_J       = 2.0;
@@ -63,126 +63,114 @@ classdef EnergyModelBS
 
             numCell = ctx.cfg.scenario.numCell;
 
+            %% =====================================================
+            % 0) Init accumulators + tmp outputs
+            %% =====================================================
             if isempty(ctx.accEnergyJPerCell)
                 ctx.accEnergyJPerCell = zeros(numCell,1);
             end
 
-            ctx.tmp.energyWPerCell = zeros(numCell,1);
-
+            if isempty(ctx.tmp)
+                ctx.tmp = struct();
+            end
             if ~isfield(ctx.tmp,'cell')
                 ctx.tmp.cell = struct();
             end
-            ctx.tmp.cell.power_W = zeros(numCell,1);
 
-            %% -------------------------------------------------
-            % 1) Load ratio (per-cell denominator)
-            %% -------------------------------------------------
+            ctx.tmp.energyWPerCell = zeros(numCell,1);
+            ctx.tmp.cell.power_W   = zeros(numCell,1);
+
+            %% =====================================================
+            % 1) Load ratio (PRB utilization)
+            %% =====================================================
             load = zeros(numCell,1);
 
-            if isfield(ctx.tmp,'cell') && ...
-               isfield(ctx.tmp.cell,'prbUsed') && ...
-               isfield(ctx.tmp.cell,'prbTotal')
+            if isfield(ctx.tmp,'lastPRBUsedPerCell')
 
-                used  = ctx.tmp.cell.prbUsed(:);
-                total = ctx.tmp.cell.prbTotal(:);
+                used = ctx.tmp.lastPRBUsedPerCell(:);
 
-                total(total <= 0) = 1;
+                if numel(used) == numCell
 
-                load = used ./ total;
+                    total = ctx.numPRBPerCell(:);
+                    total(total<=0) = 1;
+
+                    load = used ./ total;
+                end
             end
 
             load = min(max(load,0),1);
 
-            %% -------------------------------------------------
-            % 2) Sleep scale
-            %% -------------------------------------------------
-            sleepScale = ones(numCell,1);
+            %% =====================================================
+            % 2) Sleep scaling (direct read from ctrl)
+            %% =====================================================
+            ss = ctx.ctrl.cellSleepState(:);
+            ss = round(ss);
+            ss = min(max(ss,0),2);
 
-            if ~isempty(ctx.action) && ...
-               isfield(ctx.action,'sleep') && ...
-               isfield(ctx.action.sleep,'cellSleepState')
+            idx = ss + 1;
+            sleepScale = obj.P0_scale(idx).';
 
-                ss = ctx.action.sleep.cellSleepState;
+            %% =====================================================
+            % 3) Energy scale (direct read from ctrl)
+            %% =====================================================
+            energyScale = ctx.ctrl.basePowerScale(:);
+            energyScale = max(energyScale,0.1);
 
-                if isnumeric(ss) && numel(ss)==numCell
-                    for c = 1:numCell
-                        idx = min(max(round(ss(c))+1,1),3);
-                        sleepScale(c) = obj.P0_scale(idx);
-                    end
-                end
-            end
+            % Debug (first 3 slots)
+            %if ctx.slot <= 3
+            %    disp("EnergyModel effective energyScale:");
+            %    disp(energyScale.');
+            %end
 
-            %% -------------------------------------------------
-            % 3) energy.basePowerScale (energy only)
-            %% -------------------------------------------------
-            energyScale = ones(numCell,1);
-
-            if isfield(ctx.tmp,'basePowerScale')
-                s = ctx.tmp.basePowerScale;
-                if isnumeric(s) && numel(s)==numCell
-                    energyScale = s(:);
-                end
-            end
-
-            %% -------------------------------------------------
-            % 4) Tx Power (single source of truth)
-            %% -------------------------------------------------
-            if isscalar(ctx.txPowerCell_dBm)
-                txPower_dBm = ctx.txPowerCell_dBm * ones(numCell,1);
-            else
-                txPower_dBm = ctx.txPowerCell_dBm(:);
-            end
-
-            % Safety clamp to avoid Inf
-            txPower_dBm = min(max(txPower_dBm, -100), 80);
+            %% =====================================================
+            % 4) Tx power (per-cell)
+            %% =====================================================
+            txPower_dBm = ctx.txPowerCell_dBm(:);
+            txPower_dBm = min(max(txPower_dBm,-100),80);
 
             Ptx_W = 10.^((txPower_dBm - 30)/10);
 
-            %% -------------------------------------------------
-            % 5) Compute components
-            %% -------------------------------------------------
-            % Base power
+            %% =====================================================
+            % 5) Compute power components
+            %% =====================================================
+            % Base
             P0 = obj.P0_on_W * sleepScale;
-
             if obj.applyToBase
                 P0 = P0 .* energyScale;
             end
 
-            % PA power
+            % PA
             Ppa = obj.kPA * Ptx_W;
-
             if obj.applyToPA
                 Ppa = Ppa .* energyScale;
             end
 
-            % Load power
-            Pld = obj.kLoad_W * (load .^ obj.loadGamma);
+            % Load dependent (not scaled)
+            Pld = obj.kLoad_W * (load.^obj.loadGamma);
 
             % Total
             P = P0 + Ppa + Pld;
 
-            % Final numeric protection
             P(~isfinite(P)) = 0;
             P = max(P,0);
 
-            %% -------------------------------------------------
+            %% =====================================================
             % 6) Integrate energy
-            %% -------------------------------------------------
+            %% =====================================================
             ctx.accEnergyJPerCell = ctx.accEnergyJPerCell + P * ctx.dt;
 
             ctx.tmp.energyWPerCell = P;
             ctx.tmp.cell.power_W   = P;
 
-            %% -------------------------------------------------
+            %% =====================================================
             % 7) Event-driven signaling energy
-            %% -------------------------------------------------
-            if isfield(ctx.tmp,'events') && ~isempty(ctx.tmp.events)
+            %% =====================================================
+            if isfield(ctx.tmp,'events')
 
                 ev = ctx.tmp.events;
 
                 % HO
-                if isfield(ev,'hoOccured') && ev.hoOccured && ...
-                   isfield(ev,'lastHOfrom') && isfield(ev,'lastHOto')
+                if isfield(ev,'hoOccured') && ev.hoOccured
 
                     fromC = ev.lastHOfrom;
                     toC   = ev.lastHOto;
@@ -199,14 +187,13 @@ classdef EnergyModelBS
                 end
 
                 % PingPong
-                if isfield(ev,'pingPongCountInc') && ev.pingPongCountInc > 0
+                if isfield(ev,'pingPongCountInc') && ev.pingPongCountInc>0
                     extra = obj.E_pingpong_J * ev.pingPongCountInc / numCell;
                     ctx.accEnergyJPerCell = ctx.accEnergyJPerCell + extra;
                 end
 
                 % RLF
-                if isfield(ev,'rlfOccured') && ev.rlfOccured && ...
-                   isfield(ev,'rlfFrom') && isfield(ev,'rlfTo')
+                if isfield(ev,'rlfOccured') && ev.rlfOccured
 
                     fromC = ev.rlfFrom;
                     toC   = ev.rlfTo;
@@ -225,3 +212,5 @@ classdef EnergyModelBS
         end
     end
 end
+
+

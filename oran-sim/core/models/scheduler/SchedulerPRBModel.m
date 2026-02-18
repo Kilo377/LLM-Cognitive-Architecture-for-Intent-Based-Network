@@ -43,16 +43,20 @@ classdef SchedulerPRBModel
             ctx.tmp.cell.schedUECount = zeros(numCell,1);
 
             %--------------------------------------------------
-            % Sleep gating
+            % Sleep gating (use ctx.ctrl, NOT tmp)
             %--------------------------------------------------
             cellIsSleeping = false(numCell,1);
-
-            if isfield(ctx.tmp,'cellIsSleeping')
-                v = ctx.tmp.cellIsSleeping(:);
-                if numel(v)==numCell
-                    cellIsSleeping = logical(v);
+            
+            if isfield(ctx,'ctrl') && isfield(ctx.ctrl,'cellSleepState')
+            
+                ss = ctx.ctrl.cellSleepState(:);
+            
+                if numel(ss)==numCell
+                    cellIsSleeping = (ss >= 1);   % state 1 or 2 means sleeping
                 end
             end
+
+
 
             %--------------------------------------------------
             % Per-cell scheduling
@@ -164,13 +168,11 @@ classdef SchedulerPRBModel
 
             selU = 0;
 
-            if isempty(ctx.action) || ...
-               ~isfield(ctx.action,'scheduling') || ...
-               ~isfield(ctx.action.scheduling,'selectedUE')
+            if ~isfield(ctx,'ctrl') || ~isfield(ctx.ctrl,'selectedUE')
                 return;
             end
+            sel = ctx.ctrl.selectedUE;
 
-            sel = ctx.action.scheduling.selectedUE;
 
             if ~isvector(sel) || numel(sel) < c
                 return;

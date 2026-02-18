@@ -528,7 +528,7 @@ core/
 
 1) [✓]core/RanContext.m（新增 KPI 累加器与基线字段）
 
-2) core/RanKernelNR.m（加入 ActionApplier，补齐 KPI 流水线，finalize 走 KPIModel）
+2) [✓]core/RanKernelNR.m（加入 ActionApplier，补齐 KPI 流水线，finalize 走 KPIModel）
 
 3) [✓]core/kpi/KPIModel.m（升级为 KPIModel v3，全网 KPI 统一在这里算）
 
@@ -540,3 +540,53 @@ models/
 7) [✓]models/EnergyModelBS.m（读取 basePowerScale，读取 sleep，读取事件能耗）
 
 现存的 SchedulerModel.m是上一个版本了，已经删除。只用 SchedulerPRBModel()。
+
+当上述修改生效后, 真正的问题才暴露:
+
+```
+=========== Network Control Sweep ===========
+Exp             Thr(M)     Energy   SINR     MCS      BLER     DropR    HO       RLF      PRButil 
+
+    0.1580    7.5601    0.0232    0.0244    0.0000    0.0000    0.0630         0    0.0008
+    0.0001    7.2401   -1.5259    0.0163    0.0000    0.0000    0.0630         0         0
+    0.1720       Inf    0.0223    0.0261    0.0000    0.0000    0.0630         0    0.0008
+    0.1750    4.6801    0.0284    0.0264    0.0000    0.0000    0.0630         0    0.0008
+    0.1805    2.7601    0.0362    0.0270    0.0000    0.0000    0.0630         0    0.0008
+    0.0019    7.7752    0.0224    0.0247    0.0000    0.0000    0.0560         0    0.0010
+    0.0036    7.7910    0.0214    0.0235    0.0000    0.0000    0.0650         0    0.0010
+    0.1580    7.5601    0.0232    0.0244    0.0000    0.0000    0.0630         0    0.0008
+    0.1580    7.5601    0.0232    0.0244    0.0000    0.0000    0.0630         0    0.0008
+    0.1666    7.6102    0.0232    0.0244    0.0000    0.0000    0.0630         0    0.0009
+```
+
+当前`Core`的仿真仍然存在问题.
+目前的架构把控制面和网络面拆成了可插拔模型, 然而, 存在至少同一控制量在多个模型里重复生效"和"睡眠/带宽的物理含义没有闭环"等问题.
+当前的仿真流程:
+```
+1. ctx.nextSlot()
+
+2. ActionApplierModel.step()
+ action 挂到 ctx.action。你把一些可控量写进 ctx 或 ctx.tmp。你每 slot 先 reset baseline。
+
+3. Mobility
+
+4. Traffic 产生包 + deadline 递减 + 过期丢包
+
+5. Beamforming
+
+6. RadioModel 计算 RSRP 和 SINR
+
+7. HOModel 做小区选择和 HO/RLF
+
+8. SchedulerPRBModel 基于队列和 action 分配 PRB
+
+9. PhyServiceModel + NrPhyMacAdapter 估算 TBS/BLER 并把 bits 服务进队列
+
+10. EnergyModelBS 计算功耗并积分
+
+11. KPIModel 汇总 KPI
+
+12. ctx.updateStateBus() 发布给 Near-RT RIC
+
+```
+已经跟新几处offset重复问题, 但是仍然存在energy不敏感等状况, 接下来进行下一步修改 

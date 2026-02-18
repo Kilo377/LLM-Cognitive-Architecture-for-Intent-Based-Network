@@ -1,12 +1,11 @@
 classdef RadioModel < handle
-%RADIOMODEL v4
+%RADIOMODEL v5 (clean control semantics)
 %
-% Supports:
-%   - power.cellTxPowerOffset_dB
-%   - energy.basePowerScale
-%   - sleep.cellSleepState
-%   - radio.bandwidthScale
-%   - radio.interferenceMitigation
+% Control philosophy:
+%   - Tx power ONLY from ctx.txPowerCell_dBm
+%   - Energy scaling DOES NOT affect radio
+%   - Bandwidth from ctx.bandwidthHzPerCell
+%   - Sleep only affects interference scaling (coverage already reduced in ActionApplier)
 
     properties
         pathlossExp
@@ -92,7 +91,7 @@ classdef RadioModel < handle
             end
 
             %% =====================================================
-            % 2. Tx power baseline
+            % 2. Tx power (single source of truth)
             %% =====================================================
             txPower_dBm = ctx.txPowerCell_dBm;
             if isscalar(txPower_dBm)
@@ -101,37 +100,22 @@ classdef RadioModel < handle
                 txPower_dBm = txPower_dBm(:);
             end
 
-
-            % energy scaling -> change Tx baseline
-            if ~isempty(ctx.action) && isfield(ctx.action,'energy') && ...
-                    isfield(ctx.action.energy,'basePowerScale')
-
-                s = ctx.action.energy.basePowerScale;
-                if isnumeric(s) && numel(s)==numCell
-                    txPower_dBm = txPower_dBm + 10*log10(max(s(:),1e-6));
-                end
-            end
-
-            % explicit power offset
-            if ~isempty(ctx.action) && isfield(ctx.action,'power') && ...
-                    isfield(ctx.action.power,'cellTxPowerOffset_dB')
-
-                off = ctx.action.power.cellTxPowerOffset_dB;
-                if isnumeric(off) && numel(off)==numCell
-                    txPower_dBm = txPower_dBm + off(:);
-                end
-            end
-
             %% =====================================================
-            % 3. Load smoothing
+            % 3. Load smoothing (per-cell PRB)
             %% =====================================================
             load = ones(numCell,1) * obj.interfMinLoad;
 
             if isfield(ctx,'tmp') && ...
                isfield(ctx.tmp,'lastPRBUsedPerCell') && ...
-               ctx.numPRB > 0
+               isfield(ctx.tmp,'cell') && ...
+               isfield(ctx.tmp.cell,'prbTotal')
 
-                instLoad = ctx.tmp.lastPRBUsedPerCell(:)/ctx.numPRB;
+                prbUsed  = ctx.tmp.lastPRBUsedPerCell(:);
+                prbTotal = ctx.tmp.cell.prbTotal(:);
+
+                prbTotal(prbTotal<=0) = 1;
+
+                instLoad = prbUsed ./ prbTotal;
                 instLoad = max(instLoad, obj.interfMinLoad);
 
                 if isempty(obj.smoothedLoad)
@@ -141,19 +125,19 @@ classdef RadioModel < handle
                         obj.loadSmoothFactor * obj.smoothedLoad + ...
                         (1-obj.loadSmoothFactor) * instLoad;
                 end
+
                 load = obj.smoothedLoad;
             end
 
             %% =====================================================
-            % 4. Sleep effect on interference
+            % 4. Sleep interference scaling
             %% =====================================================
             sleepFactor = ones(numCell,1);
 
-            if ~isempty(ctx.action) && isfield(ctx.action,'sleep') && ...
-                    isfield(ctx.action.sleep,'cellSleepState')
+            if isfield(ctx,'tmp') && isfield(ctx.tmp,'cellSleepState')
 
-                ss = ctx.action.sleep.cellSleepState;
-                if isnumeric(ss) && numel(ss)==numCell
+                ss = ctx.tmp.cellSleepState(:);
+                if numel(ss)==numCell
                     for c=1:numCell
                         idx = min(max(round(ss(c))+1,1),3);
                         sleepFactor(c) = obj.sleepInterfFactor(idx);
@@ -161,44 +145,25 @@ classdef RadioModel < handle
                 end
             end
 
-            %% =====================================================
-            % 5. Interference mitigation flag
-            %% =====================================================
-            interfMitigationScale = 1.0;
-
-            if ~isempty(ctx.action) && isfield(ctx.action,'radio') && ...
-               isfield(ctx.action.radio,'interferenceMitigation') && ...
-               ctx.action.radio.interferenceMitigation
-
-                interfMitigationScale = 0.6;
-            end
-
-            interfScale = ...
-                (load.^obj.interfAlpha) .* ...
-                sleepFactor * interfMitigationScale;
+            interfScale = (load.^obj.interfAlpha) .* sleepFactor;
 
             %% =====================================================
-            % 6. Noise (bandwidth scaling supported)
+            % 5. Per-cell bandwidth + noise
             %% =====================================================
-            BW = ctx.bandwidthHz;
+            BWcell = ctx.bandwidthHz * ones(numCell,1);
 
-            if ~isempty(ctx.action) && isfield(ctx.action,'radio') && ...
-                    isfield(ctx.action.radio,'bandwidthScale')
+            if isfield(ctx,'bandwidthHzPerCell') && ...
+               numel(ctx.bandwidthHzPerCell)==numCell
 
-                bs = ctx.action.radio.bandwidthScale;
-                if isnumeric(bs) && numel(bs)==numCell
-                    % assume uniform BW scaling
-                    BW = BW * mean(bs);
-                end
+                BWcell = ctx.bandwidthHzPerCell(:);
             end
 
             kB = 1.38064852e-23;
-            noise_W = kB * obj.temperature_K * BW;
-            noise_dBm = 10*log10(noise_W) + 30 + obj.noiseFigure_dB;
-            noise_W = 10.^((noise_dBm-30)/10);
+            noiseWcell = kB * obj.temperature_K .* BWcell;
+            noiseWcell = max(noiseWcell, 1e-20);
 
             %% =====================================================
-            % 7. Fast fading
+            % 6. Fast fading
             %% =====================================================
             v_mps = deltaPos / max(ctx.dt,1e-12);
 
@@ -209,7 +174,7 @@ classdef RadioModel < handle
             fastFadeUE_dB = sigmaFF .* randn(numUE,1);
 
             %% =====================================================
-            % 8. RSRP
+            % 7. RSRP
             %% =====================================================
             rsrp = zeros(numUE,numCell);
 
@@ -234,7 +199,7 @@ classdef RadioModel < handle
             ctx.rsrp_dBm = rsrp;
 
             %% =====================================================
-            % 9. SINR
+            % 8. SINR
             %% =====================================================
             sinr_dB = zeros(numUE,1);
             interfJitterCell_dB = ...
@@ -257,22 +222,16 @@ classdef RadioModel < handle
                     interf_W = interf_W + p_W * interfScale(c);
                 end
 
+                noise_W = noiseWcell(s);
+
                 sinr_W = sig_W/(interf_W + noise_W + 1e-15);
-                sinr_dB(u) = 10*log10(sinr_W);
+                sinr_dB(u) = 10*log10(max(sinr_W,1e-12));
             end
 
             ctx.sinr_dB = sinr_dB;
-            
-            %% =======================print==============================
-            %if ctx.slot <= 5
-            %    fprintf("Slot %d mean SINR = %.2f dB\n", ...
-            %        ctx.slot, mean(ctx.sinr_dB));
-            %end
-
-       
 
             %% =====================================================
-            % 10. Post-HO penalty
+            % 9. Post-HO penalty
             %% =====================================================
             if isfield(ctx,'uePostHoUntilSlot') && ...
                isfield(ctx,'uePostHoSinrPenalty_dB')
@@ -289,7 +248,7 @@ classdef RadioModel < handle
             end
 
             %% =====================================================
-            % 11. Observability
+            % 10. Observability
             %% =====================================================
             ctx.tmp.meanSinr_dB = mean(ctx.sinr_dB);
         end

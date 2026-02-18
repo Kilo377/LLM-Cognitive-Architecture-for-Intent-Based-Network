@@ -1,24 +1,25 @@
 classdef ActionApplierModel
-%ACTIONAPPLIERMODEL
+% ACTIONAPPLIERMODEL v4.0
 %
 % Responsibilities:
-%   1) Always attach action to ctx
-%   2) Reset controllable parameters to baseline each slot
-%   3) Apply control knobs in a clean, modular way
+%   1) Attach action to ctx
+%   2) Reset controllable parameters from ctx.baseline each slot
+%   3) Apply control knobs in deterministic order
 %
-% Controls:
-%   radio.bandwidthScale
-%   power.cellTxPowerOffset_dB
-%   energy.basePowerScale
-%   sleep.cellSleepState
-%   scheduling.selectedUE
+% IMPORTANT:
+%   - baseline is stored in ctx.baseline (persistent)
+%   - NEVER use ctx.tmp.baseline
+%   - All runtime values are derived from baseline every slot
 %
-% Design rule:
-%   - Never permanently overwrite baseline
-%   - Always derive from stored baseline
-%   - Only modify ctx / ctx.tmp, not other models directly
+% Controls supported:
+%   radio.bandwidthScale        (per cell, 0~1)
+%   power.cellTxPowerOffset_dB  (per cell, offset in dB)
+%   energy.basePowerScale       (per cell, scale factor)
+%   sleep.cellSleepState        (per cell: 0/1/2)
+%   scheduling.selectedUE       (per cell)
 
     methods
+
         function obj = ActionApplierModel()
         end
 
@@ -31,35 +32,30 @@ classdef ActionApplierModel
 
             numCell = ctx.cfg.scenario.numCell;
 
-            if isempty(action)
+            %==================================================
+            % 1) Reset to baseline (EVERY SLOT, FIRST STEP)
+            %==================================================
+            % Baseline comes from ctx.baseline (persistent)
+
+            ctx.txPowerCell_dBm    = ctx.baseline.txPowerCell_dBm;
+            ctx.numPRBPerCell      = ctx.baseline.numPRBPerCell;
+            ctx.bandwidthHzPerCell = ctx.baseline.bandwidthHzPerCell;
+            ctx.numPRB             = ctx.baseline.numPRB;   % legacy scalar
+
+            %==================================================
+            % 2) If no action → just baseline
+            %==================================================
+            if isempty(action) || ~isstruct(action)
+                ctx.tmp.basePowerScale   = ones(numCell,1);
+                ctx.tmp.cellIsSleeping   = zeros(numCell,1);
+                ctx.tmp.cellSleepState   = zeros(numCell,1);
+                ctx.tmp.selectedUE       = zeros(numCell,1);
+                ctx.lastNumPRB           = ctx.numPRB;
                 return;
             end
 
             %==================================================
-            % 1) Ensure baseline values exist (one-time init)
-            %==================================================
-            if ~isfield(ctx.tmp,'baseline')
-                ctx.tmp.baseline = struct();
-            end
-
-            % ---- baseline PRB ----
-            if ~isfield(ctx.tmp.baseline,'numPRB')
-                ctx.tmp.baseline.numPRB = ctx.numPRB;
-            end
-
-            % ---- baseline txPower ----
-            if ~isfield(ctx.tmp.baseline,'txPowerCell_dBm')
-                ctx.tmp.baseline.txPowerCell_dBm = ctx.txPowerCell_dBm;
-            end
-
-            %==================================================
-            % 2) Reset to baseline (every slot)
-            %==================================================
-            ctx.numPRB            = ctx.tmp.baseline.numPRB;
-            ctx.txPowerCell_dBm   = ctx.tmp.baseline.txPowerCell_dBm;
-
-            %==================================================
-            % 3) Apply radio.bandwidthScale
+            % 3) radio.bandwidthScale (per cell)
             %==================================================
             if isfield(action,'radio') && ...
                isfield(action.radio,'bandwidthScale')
@@ -67,18 +63,29 @@ classdef ActionApplierModel
                 bs = action.radio.bandwidthScale;
 
                 if isnumeric(bs) && numel(bs)==numCell
+
                     bs = max(min(bs(:),1),0);
 
-                    effScale = mean(bs);
+                    % Scale PRB per cell
+                    ctx.numPRBPerCell = ...
+                        max(1, round(ctx.numPRBPerCell .* bs));
 
-                    ctx.numPRB = max(1, ...
-                        round(ctx.tmp.baseline.numPRB * effScale));
+                    % Scale bandwidth per cell
+                    ctx.bandwidthHzPerCell = ...
+                        ctx.bandwidthHzPerCell .* max(bs,1e-3);
+
+                    % Legacy scalar PRB
+                    ctx.numPRB = ...
+                        max(1, round(mean(ctx.numPRBPerCell)));
                 end
             end
 
             %==================================================
-            % 4) Apply power offset (affects SINR)
+            % 4) power.cellTxPowerOffset_dB (OFFSET semantics)
             %==================================================
+            % This is NOT absolute power.
+            % It is baseline + offset (static over episode).
+
             if isfield(action,'power') && ...
                isfield(action.power,'cellTxPowerOffset_dB')
 
@@ -91,8 +98,7 @@ classdef ActionApplierModel
             end
 
             %==================================================
-            % 5) Apply energy.basePowerScale
-            % (EnergyModel reads this)
+            % 5) energy.basePowerScale (ONLY affects energy model)
             %==================================================
             if isfield(action,'energy') && ...
                isfield(action.energy,'basePowerScale')
@@ -101,13 +107,15 @@ classdef ActionApplierModel
 
                 if isnumeric(s) && numel(s)==numCell
                     ctx.tmp.basePowerScale = max(s(:),0.1);
+                else
+                    ctx.tmp.basePowerScale = ones(numCell,1);
                 end
             else
                 ctx.tmp.basePowerScale = ones(numCell,1);
             end
 
             %==================================================
-            % 6) Apply sleep control
+            % 6) sleep control
             %==================================================
             if isfield(action,'sleep') && ...
                isfield(action.sleep,'cellSleepState')
@@ -115,17 +123,32 @@ classdef ActionApplierModel
                 ss = action.sleep.cellSleepState;
 
                 if isnumeric(ss) && numel(ss)==numCell
-                    ctx.tmp.cellIsSleeping = ...
-                        (round(ss(:)) >= 1);
-                    ctx.tmp.cellSleepState = round(ss(:));
+                    ss = round(ss(:));
+                    ctx.tmp.cellSleepState = ss;
+                    ctx.tmp.cellIsSleeping = (ss >= 1);
+                else
+                    ctx.tmp.cellSleepState = zeros(numCell,1);
+                    ctx.tmp.cellIsSleeping = zeros(numCell,1);
                 end
             else
-                ctx.tmp.cellIsSleeping = zeros(numCell,1);
                 ctx.tmp.cellSleepState = zeros(numCell,1);
+                ctx.tmp.cellIsSleeping = zeros(numCell,1);
             end
 
             %==================================================
-            % 7) Scheduler selected UE passthrough
+            % 6.1) Sleep reduces Tx power (coverage impact)
+            %==================================================
+            ss = ctx.tmp.cellSleepState;
+
+            sleepPenalty_dB = zeros(numCell,1);
+            sleepPenalty_dB(ss==1) = 15;   % light sleep
+            sleepPenalty_dB(ss==2) = 35;   % deep sleep
+
+            ctx.txPowerCell_dBm = ...
+                ctx.txPowerCell_dBm - sleepPenalty_dB;
+
+            %==================================================
+            % 7) scheduling.selectedUE
             %==================================================
             if isfield(action,'scheduling') && ...
                isfield(action.scheduling,'selectedUE')
@@ -134,15 +157,30 @@ classdef ActionApplierModel
 
                 if isnumeric(sel) && numel(sel)>=numCell
                     ctx.tmp.selectedUE = sel(:);
+                else
+                    ctx.tmp.selectedUE = zeros(numCell,1);
                 end
             else
                 ctx.tmp.selectedUE = zeros(numCell,1);
             end
 
             %==================================================
-            % 8) Save last effective PRB (for KPI)
+            % 8) Save effective PRB (for KPI/observability)
             %==================================================
             ctx.lastNumPRB = ctx.numPRB;
+
+            %==================================================
+            % 9) Safety guard (optional but recommended)
+            %==================================================
+            % Prevent runaway power due to coding mistakes
+            ctx.txPowerCell_dBm = ...
+                min(max(ctx.txPowerCell_dBm, -50), 80);
+
+            %if ctx.slot <= 5
+            %    disp("Slot " + ctx.slot + " txPower:");
+            %    disp(ctx.txPowerCell_dBm);
+            %end
+
 
         end
     end

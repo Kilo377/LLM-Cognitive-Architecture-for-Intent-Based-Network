@@ -968,3 +968,11 @@ HO 判断基于旧 beam
 `RanContext.m`
 
 action 仍然在其他模型被读取, 导致两者可能不同步
+
+已经对action和ctrl进行更新.
+
+目前还存在问题:
+
+⚠ Scheduler-PRB 链路断开
+
+⚠ SINR处于过高区

@@ -1,106 +1,52 @@
 classdef RadioModel < handle
-%RADIOMODEL v7.0 (ctrl-only + interferenceCouplingFactor + unified debug)
+% RADIOMODEL v8.0 (High-Coupling Competitive Version)
 %
-% Fixes:
-%   1) Read ctrl only. Do not read ctx.action.
-%   2) Add interferenceCouplingFactor:
-%        power ↑ -> interference ↑
-%        bandwidth ↑ -> interference ↑
-%        load ↑ -> interference ↑
-%   3) Unified debug interface:
-%        ctx.debug.trace.radio
-%        optional printing via cfg.debug
+% 强化干扰竞争模型：
+%   1) 功率放大干扰采用指数级映射
+%   2) 带宽影响通过资源竞争 + 噪声同时作用
+%   3) 负载对干扰为超线性
+%   4) 加入边缘UE干扰放大
+%   5) 加入SINR压缩，避免无限增长
 %
-% Reads:
-%   ctx.txPowerCell_dBm
-%   ctx.bandwidthHzPerCell (or ctx.bandwidthHz)
-%   ctx.numPRBPerCell (or ctx.numPRB)
-%   ctx.lastPRBUsedPerCell_slot
-%   ctx.ctrl.cellSleepState
-%   ctx.uePos, ctx.dt, ctx.servingCell
-%   ctx.tmp.beamGain_dB (optional)
-%   ctx.scenario.topology.gNBPos (or gNBPos_m)
+% Debug接口保持统一：
+%   ctx.tmp.debug.trace.radio
 %
-% Writes:
-%   ctx.rsrp_dBm
-%   ctx.sinr_dB
-%   ctx.tmp.meanSinr_dB
-%   ctx.tmp.channel.interference_dBm / noise_dBm (per UE)
-%   ctx.debug.trace.radio
 
     properties
-        % Large-scale channel
-        pathlossExp
-        shadowingStd_dB
-        shadowCorrDist_m
+
+        % Pathloss
+        pathlossExp = 3.5
+        shadowingStd_dB = 6
+        shadowCorrDist_m = 50
 
         % Noise
-        noiseFigure_dB
-        temperature_K
+        noiseFigure_dB = 7
+        temperature_K  = 290
 
-        % Interference/load base model
-        interfAlpha
-        interfMinLoad
-        sleepInterfFactor
-        loadSmoothFactor
+        % Load model
+        interfMinLoad = 0.05
+        loadSmoothFactor = 0.8
 
-        % NEW: Coupling factors
-        % kTx:  per-dB sensitivity of interference (relative to median cell Tx)
-        % kBw:  exponent on BW ratio
-        % kLoadExtra: extra exponent on load ratio (in addition to interfAlpha)
-        interferenceCouplingFactor
+        % ===== 强耦合参数 =====
+        kTxExp      = 0.35   % 功率指数耦合
+        kBwExp      = 0.8    % 带宽指数耦合
+        kLoadExp    = 1.8    % 负载超线性
+        edgeBoost   = 1.6    % 边缘UE干扰放大
+        sinrCompressThreshold_dB = 25
+        sinrCompressSlope        = 0.6
 
-        % Small-scale fading
-        fastFadeSigmaLow_dB
-        fastFadeSigmaHigh_dB
-        speedThreshold_mps
+        % Fading
+        fastFadeSigmaLow_dB  = 1
+        fastFadeSigmaHigh_dB = 3
+        speedThreshold_mps   = 8
 
-        % Interference jitter
-        interfJitterSigma_dB
-
-        % Internal state
+        % Internal
         shadowField
         smoothedLoad
         lastUEPos
     end
 
     methods
-        function obj = RadioModel()
-
-            % Large-scale
-            obj.pathlossExp      = 3.5;
-            obj.shadowingStd_dB  = 6;
-            obj.shadowCorrDist_m = 50;
-
-            % Noise
-            obj.noiseFigure_dB = 7;
-            obj.temperature_K  = 290;
-
-            % Interference/load
-            obj.interfAlpha       = 1.2;
-            obj.interfMinLoad     = 0.05;
-            obj.sleepInterfFactor = [1.0 0.3 0.05];  % state 0/1/2
-            obj.loadSmoothFactor  = 0.8;
-
-            % Coupling
-            obj.interferenceCouplingFactor = struct();
-            obj.interferenceCouplingFactor.kTx_dB  = 0.20; % 0.20 means +10 dB -> ~+2 dB interf effect
-            obj.interferenceCouplingFactor.kBw     = 0.60; % BW ratio exponent
-            obj.interferenceCouplingFactor.kLoadExtra = 0.30; % extra exponent on load ratio
-
-            % Fast fading
-            obj.fastFadeSigmaLow_dB  = 1.0;
-            obj.fastFadeSigmaHigh_dB = 3.0;
-            obj.speedThreshold_mps   = 8.0;
-
-            % Per-cell random jitter on interferers
-            obj.interfJitterSigma_dB = 1.5;
-
-            % Internal
-            obj.shadowField  = [];
-            obj.smoothedLoad = [];
-            obj.lastUEPos    = [];
-        end
 
         function initialize(obj, ctx)
             numUE   = ctx.cfg.scenario.numUE;
@@ -116,233 +62,161 @@ classdef RadioModel < handle
             numUE   = ctx.cfg.scenario.numUE;
             numCell = ctx.cfg.scenario.numCell;
 
-            % -----------------------------
-            % gNB position compatibility
-            % -----------------------------
-            if isfield(ctx.scenario,'topology') && isfield(ctx.scenario.topology,'gNBPos')
-                gNB = ctx.scenario.topology.gNBPos;
-            else
-                gNB = ctx.scenario.topology.gNBPos_m;
-            end
-
             if isempty(obj.shadowField)
                 obj.initialize(ctx);
             end
 
-            % =====================================================
-            % 1) Shadow correlation update
-            % =====================================================
-            deltaPos = vecnorm(ctx.uePos - obj.lastUEPos, 2, 2);
+            % =============================
+            % gNB position
+            % =============================
+            gNB = ctx.scenario.topology.gNBPos;
+
+            % =============================
+            % Shadow update
+            % =============================
+            deltaPos = vecnorm(ctx.uePos - obj.lastUEPos,2,2);
             obj.lastUEPos = ctx.uePos;
 
             for u = 1:numUE
-                corr = exp(-deltaPos(u) / obj.shadowCorrDist_m);
-                newShadow = obj.shadowingStd_dB * randn(1, numCell);
+                corr = exp(-deltaPos(u)/obj.shadowCorrDist_m);
+                newShadow = obj.shadowingStd_dB * randn(1,numCell);
                 obj.shadowField(u,:) = ...
                     corr * obj.shadowField(u,:) + ...
-                    sqrt(max(1 - corr^2, 0)) * newShadow;
+                    sqrt(max(1-corr^2,0))*newShadow;
             end
 
-            % =====================================================
-            % 2) Tx power (runtime single source)
-            % =====================================================
-            tx = ctx.txPowerCell_dBm;
-            if isscalar(tx)
-                txPower_dBm = tx * ones(numCell,1);
-            else
-                txPower_dBm = tx(:);
-            end
-            if numel(txPower_dBm) ~= numCell
-                txPower_dBm = txPower_dBm(1) * ones(numCell,1);
-            end
-            txPower_dBm = min(max(txPower_dBm, -50), 80);
+            % =============================
+            % Tx power
+            % =============================
+            txPower = ctx.txPowerCell_dBm(:);
+            txPower = min(max(txPower,-50),80);
 
-            % =====================================================
-            % 3) PRB total/used and load smoothing (persistent source)
-            % =====================================================
-            prbTotal = ctx.numPRB * ones(numCell,1);
-            if isfield(ctx,'numPRBPerCell') && numel(ctx.numPRBPerCell) == numCell
-                prbTotal = ctx.numPRBPerCell(:);
-            end
-            prbTotal(prbTotal <= 0) = 1;
+            % =============================
+            % PRB load
+            % =============================
+            prbTotal = ctx.numPRBPerCell(:);
+            prbUsed  = ctx.lastPRBUsedPerCell_slot(:);
 
-            prbUsed = zeros(numCell,1);
-            if isfield(ctx,'lastPRBUsedPerCell_slot') && numel(ctx.lastPRBUsedPerCell_slot) == numCell
-                prbUsed = ctx.lastPRBUsedPerCell_slot(:);
-            end
-
-            instLoad = prbUsed ./ prbTotal;
+            instLoad = prbUsed ./ max(prbTotal,1);
             instLoad = max(instLoad, obj.interfMinLoad);
-            instLoad = min(instLoad, 1);
+            instLoad = min(instLoad,1);
 
-            if isempty(obj.smoothedLoad) || numel(obj.smoothedLoad) ~= numCell
-                obj.smoothedLoad = instLoad;
-            else
-                obj.smoothedLoad = ...
-                    obj.loadSmoothFactor * obj.smoothedLoad + ...
-                    (1 - obj.loadSmoothFactor) * instLoad;
-            end
+            obj.smoothedLoad = ...
+                obj.loadSmoothFactor * obj.smoothedLoad + ...
+                (1-obj.loadSmoothFactor)*instLoad;
+
             load = obj.smoothedLoad;
 
-            % =====================================================
-            % 4) Sleep interference scaling (ctrl only)
-            % =====================================================
-            sleepFactor = ones(numCell,1);
-            ss = ctx.ctrl.cellSleepState(:);
-            if numel(ss) == numCell
-                for c = 1:numCell
-                    idx = min(max(round(ss(c)) + 1, 1), 3);
-                    sleepFactor(c) = obj.sleepInterfFactor(idx);
-                end
-            end
+            % =============================
+            % Bandwidth
+            % =============================
+            BWcell = ctx.bandwidthHzPerCell(:);
+            BWcell = max(BWcell,1e3);
 
-            % =====================================================
-            % 5) Bandwidth + noise (per cell, include NF)
-            % =====================================================
-            BWcell = ctx.bandwidthHz * ones(numCell,1);
-            if isfield(ctx,'bandwidthHzPerCell') && numel(ctx.bandwidthHzPerCell) == numCell
-                BWcell = ctx.bandwidthHzPerCell(:);
-            end
-            BWcell = max(BWcell, 1e3);
+            % =============================
+            % Noise
+            % =============================
+            kB = 1.38e-23;
+            noiseW = kB*obj.temperature_K .* BWcell;
+            noiseW = noiseW * 10^(obj.noiseFigure_dB/10);
+            noiseW = max(noiseW,1e-20);
 
-            kB = 1.38064852e-23;
-            noiseWcell = kB * obj.temperature_K .* BWcell;
-            NF_lin = 10^(obj.noiseFigure_dB/10);
-            noiseWcell = noiseWcell .* NF_lin;
-            noiseWcell = max(noiseWcell, 1e-20);
-
-            % =====================================================
-            % 6) Fast fading (UE-based)
-            % =====================================================
-            v_mps = deltaPos / max(ctx.dt, 1e-12);
+            % =============================
+            % Fast fading
+            % =============================
+            v = deltaPos / max(ctx.dt,1e-12);
             sigmaFF = obj.fastFadeSigmaLow_dB * ones(numUE,1);
-            sigmaFF(v_mps >= obj.speedThreshold_mps) = obj.fastFadeSigmaHigh_dB;
-            fastFadeUE_dB = sigmaFF .* randn(numUE,1);
+            sigmaFF(v >= obj.speedThreshold_mps) = obj.fastFadeSigmaHigh_dB;
+            fastFade = sigmaFF .* randn(numUE,1);
 
-            % =====================================================
-            % 7) RSRP per UE per cell
-            % =====================================================
-            rsrp = zeros(numUE, numCell);
+            % =============================
+            % RSRP
+            % =============================
+            rsrp = zeros(numUE,numCell);
 
-            for c = 1:numCell
-                d = vecnorm(ctx.uePos - gNB(c,:), 2, 2);
-                d = max(d, 1);
+            for c=1:numCell
+                d = vecnorm(ctx.uePos - gNB(c,:),2,2);
+                d = max(d,1);
+                pl = 10*obj.pathlossExp*log10(d);
 
-                pl_dB = 10 * obj.pathlossExp * log10(d);
-
-                beamGain_dB = 0;
-                if isfield(ctx,'tmp') && isfield(ctx.tmp,'beamGain_dB')
-                    bg = ctx.tmp.beamGain_dB(:,c);
-                    if numel(bg) == numUE
-                        beamGain_dB = bg;
-                    end
-                end
-
-                rsrp(:,c) = ...
-                    txPower_dBm(c) - pl_dB + ...
-                    obj.shadowField(:,c) + ...
-                    fastFadeUE_dB + ...
-                    beamGain_dB;
+                rsrp(:,c) = txPower(c) - pl + ...
+                            obj.shadowField(:,c) + ...
+                            fastFade;
             end
+
             ctx.rsrp_dBm = rsrp;
 
-            % =====================================================
-            % 8) Interference scale with coupling factors
-            % =====================================================
-            % Load part
-            kLoadExtra = obj.interferenceCouplingFactor.kLoadExtra;
-            loadPart = (max(load, obj.interfMinLoad) .^ (obj.interfAlpha + kLoadExtra));
+            % =============================
+            % 干扰耦合构建
+            % =============================
 
-            % Tx power part (relative to median)
-            kTx = obj.interferenceCouplingFactor.kTx_dB;
-            txRef = median(txPower_dBm);
-            txDelta_dB = txPower_dBm - txRef;
-            txPart = 10.^((kTx * txDelta_dB) / 10);
-            txPart = min(max(txPart, 0.1), 10);
+            % 1️⃣ 功率指数耦合
+            txRef = median(txPower);
+            txRatio = 10.^((txPower - txRef)/10);
+            txPart = txRatio .^ obj.kTxExp;
 
-            % BW part (relative to median)
-            kBw = obj.interferenceCouplingFactor.kBw;
+            % 2️⃣ 带宽耦合
             bwRef = median(BWcell);
-            if bwRef <= 0, bwRef = 1; end
             bwRatio = BWcell / bwRef;
-            bwPart = bwRatio .^ kBw;
-            bwPart = min(max(bwPart, 0.1), 10);
+            bwPart = bwRatio .^ obj.kBwExp;
 
-            % Final per-cell interference multiplier
-            interfScale = sleepFactor .* loadPart .* txPart .* bwPart;
+            % 3️⃣ 负载超线性
+            loadPart = load .^ obj.kLoadExp;
 
-            % =====================================================
-            % 9) SINR
-            % =====================================================
+            interfScale = txPart .* bwPart .* loadPart;
+
+            % =============================
+            % SINR计算
+            % =============================
             sinr_dB = zeros(numUE,1);
 
-            interfJitterCell_dB = obj.interfJitterSigma_dB * randn(numCell,1);
-
-            if ~isfield(ctx,'tmp') || ~isstruct(ctx.tmp)
-                ctx.tmp = struct();
-            end
-            if ~isfield(ctx.tmp,'channel') || isempty(ctx.tmp.channel)
-                ctx.tmp.channel = struct();
-            end
-            ctx.tmp.channel.interference_dBm = nan(numUE,1);
-            ctx.tmp.channel.noise_dBm        = nan(numUE,1);
-
-            for u = 1:numUE
+            for u=1:numUE
 
                 s = ctx.servingCell(u);
-                if s < 1 || s > numCell
-                    s = 1;
+                if s<1 || s>numCell
+                    s=1;
                 end
 
-                sig_W = 10.^((rsrp(u,s) - 30)/10);
+                sigW = 10.^((rsrp(u,s)-30)/10);
 
-                interf_W = 0;
-                for c = 1:numCell
-                    if c == s
+                interfW = 0;
+                for c=1:numCell
+                    if c==s
                         continue;
                     end
-                    p_dBm = rsrp(u,c) + interfJitterCell_dB(c);
-                    p_W   = 10.^((p_dBm - 30)/10);
-                    interf_W = interf_W + p_W * interfScale(c);
+
+                    pW = 10.^((rsrp(u,c)-30)/10);
+
+                    % 边缘UE增强干扰
+                    if rsrp(u,s) < median(rsrp(u,:))
+                        edgeFactor = obj.edgeBoost;
+                    else
+                        edgeFactor = 1;
+                    end
+
+                    interfW = interfW + pW * interfScale(c) * edgeFactor;
                 end
 
-                noise_W = noiseWcell(s);
+                sinrW = sigW / (interfW + noiseW(s) + 1e-15);
+                sinr = 10*log10(max(sinrW,1e-12));
 
-                sinr_W = sig_W / (interf_W + noise_W + 1e-15);
-                sinr_dB(u) = 10*log10(max(sinr_W, 1e-12));
-
-                if interf_W > 0
-                    ctx.tmp.channel.interference_dBm(u) = 10*log10(interf_W) + 30;
-                else
-                    ctx.tmp.channel.interference_dBm(u) = -inf;
+                % 4️⃣ SINR压缩
+                if sinr > obj.sinrCompressThreshold_dB
+                    excess = sinr - obj.sinrCompressThreshold_dB;
+                    sinr = obj.sinrCompressThreshold_dB + ...
+                           obj.sinrCompressSlope * excess;
                 end
-                ctx.tmp.channel.noise_dBm(u) = 10*log10(max(noise_W,1e-20)) + 30;
+
+                sinr_dB(u) = sinr;
             end
 
             ctx.sinr_dB = sinr_dB;
+            ctx.tmp.meanSinr_dB = mean(sinr_dB);
 
-            % =====================================================
-            % 10) Post-HO penalty
-            % =====================================================
-            if isfield(ctx,'uePostHoUntilSlot') && isfield(ctx,'uePostHoSinrPenalty_dB')
-                for u = 1:numUE
-                    if ctx.slot < ctx.uePostHoUntilSlot(u)
-                        ctx.sinr_dB(u) = ctx.sinr_dB(u) - ctx.uePostHoSinrPenalty_dB(u);
-                    else
-                        ctx.uePostHoSinrPenalty_dB(u) = 0;
-                    end
-                end
-            end
-
-            % =====================================================
-            % 11) Observability
-            % =====================================================
-            ctx.tmp.meanSinr_dB = mean(ctx.sinr_dB);
-
-            % =====================================================
-            % 12) Unified debug trace + optional print
-            % =====================================================
-            ctx = obj.writeDebugTrace(ctx, txPower_dBm, BWcell, prbUsed, prbTotal, load, sleepFactor, interfScale);
+            % =============================
+            % Debug trace
+            % =============================
+            ctx = obj.writeDebugTrace(ctx, txPower, BWcell, load, interfScale);
 
             if obj.shouldPrint(ctx)
                 obj.printDebug(ctx);
@@ -350,119 +224,73 @@ classdef RadioModel < handle
         end
     end
 
-    methods (Access = private)
+    methods (Access=private)
 
-        function ctx = writeDebugTrace(~, ctx, txPower_dBm, BWcell, prbUsed, prbTotal, load, sleepFactor, interfScale)
-    
-            % ==== MUST use ctx.tmp.debug ====
-    
-            if isempty(ctx.tmp)
-                ctx.tmp = struct();
-            end
-            if ~isfield(ctx.tmp,'debug') || isempty(ctx.tmp.debug)
+        function ctx = writeDebugTrace(~, ctx, txPower, BWcell, load, interfScale)
+
+            if ~isfield(ctx.tmp,'debug')
                 ctx.tmp.debug = struct();
             end
-            if ~isfield(ctx.tmp.debug,'trace') || isempty(ctx.tmp.debug.trace)
+            if ~isfield(ctx.tmp.debug,'trace')
                 ctx.tmp.debug.trace = struct();
             end
-    
+
             tr = struct();
             tr.slot = ctx.slot;
-    
-            tr.cell = struct();
-            tr.cell.txPower_dBm  = txPower_dBm(:);
-            tr.cell.bandwidthHz  = BWcell(:);
-            tr.cell.prbUsed      = prbUsed(:);
-            tr.cell.prbTotal     = prbTotal(:);
-            tr.cell.load         = load(:);
-            tr.cell.sleepFactor  = sleepFactor(:);
-            tr.cell.interfScale  = interfScale(:);
-    
-            tr.ue = struct();
-            tr.ue.meanSinr_dB = mean(ctx.sinr_dB);
-            tr.ue.minSinr_dB  = min(ctx.sinr_dB);
-            tr.ue.maxSinr_dB  = max(ctx.sinr_dB);
-    
-            if isfield(ctx.tmp,'channel')
-                interf = ctx.tmp.channel.interference_dBm;
-                noise  = ctx.tmp.channel.noise_dBm;
-    
-                if ~isempty(interf)
-                    tr.ue.meanInterf_dBm = mean(interf(isfinite(interf)));
-                else
-                    tr.ue.meanInterf_dBm = NaN;
-                end
-    
-                if ~isempty(noise)
-                    tr.ue.meanNoise_dBm = mean(noise(isfinite(noise)));
-                else
-                    tr.ue.meanNoise_dBm = NaN;
-                end
-            end
-    
+
+            tr.cell.txPower = txPower;
+            tr.cell.bandwidth = BWcell;
+            tr.cell.load = load;
+            tr.cell.interfScale = interfScale;
+
+            tr.ue.meanSinr = mean(ctx.sinr_dB);
+            tr.ue.minSinr  = min(ctx.sinr_dB);
+            tr.ue.maxSinr  = max(ctx.sinr_dB);
+
             ctx.tmp.debug.trace.radio = tr;
         end
-    
-    
+
         function tf = shouldPrint(~, ctx)
-    
+
             tf = false;
-    
+
             if ~isfield(ctx.cfg,'debug'), return; end
-            if ~isfield(ctx.cfg.debug,'enable'), return; end
             if ~ctx.cfg.debug.enable, return; end
-    
-            every = 1;
-            if isfield(ctx.cfg.debug,'every') && ctx.cfg.debug.every >= 1
-                every = round(ctx.cfg.debug.every);
+
+            every = 100;
+            if isfield(ctx.cfg.debug,'every')
+                every = ctx.cfg.debug.every;
             end
-    
-            if mod(ctx.slot, every) ~= 0
+
+            if mod(ctx.slot,every)~=0
                 return;
             end
-    
+
             if isfield(ctx.cfg.debug,'modules')
-                try
-                    ms = string(ctx.cfg.debug.modules);
-                    if ~any(ms=="radio") && ~any(ms=="all")
-                        return;
-                    end
-                catch
+                ms = string(ctx.cfg.debug.modules);
+                if ~any(ms=="radio") && ~any(ms=="all")
+                    return;
                 end
             end
-    
+
             tf = true;
         end
-    
-    
+
         function printDebug(~, ctx)
-    
-            if ~isfield(ctx.tmp,'debug'), return; end
-            if ~isfield(ctx.tmp.debug,'trace'), return; end
-            if ~isfield(ctx.tmp.debug.trace,'radio'), return; end
-    
+
             tr = ctx.tmp.debug.trace.radio;
-    
+
             fprintf('[DEBUG][slot=%d][radio] meanSINR=%.2f dB  min=%.2f  max=%.2f\n', ...
-                tr.slot, tr.ue.meanSinr_dB, tr.ue.minSinr_dB, tr.ue.maxSinr_dB);
-    
-            numCell = numel(tr.cell.txPower_dBm);
-            for c = 1:numCell
-                fprintf('  cell=%d tx=%.1f dBm bw=%.2f MHz load=%.2f interfScale=%.3f sleepFactor=%.2f\n', ...
+                tr.slot, tr.ue.meanSinr, tr.ue.minSinr, tr.ue.maxSinr);
+
+            for c=1:numel(tr.cell.txPower)
+                fprintf('  cell=%d tx=%.1f dBm bw=%.1f MHz load=%.2f interfScale=%.3f\n', ...
                     c, ...
-                    tr.cell.txPower_dBm(c), ...
-                    tr.cell.bandwidthHz(c)/1e6, ...
+                    tr.cell.txPower(c), ...
+                    tr.cell.bandwidth(c)/1e6, ...
                     tr.cell.load(c), ...
-                    tr.cell.interfScale(c), ...
-                    tr.cell.sleepFactor(c));
-            end
-    
-            if isfield(tr.ue,'meanInterf_dBm') && isfinite(tr.ue.meanInterf_dBm)
-                fprintf('  UE meanInterf=%.2f dBm  meanNoise=%.2f dBm\n', ...
-                    tr.ue.meanInterf_dBm, tr.ue.meanNoise_dBm);
+                    tr.cell.interfScale(c));
             end
         end
-    
     end
-
 end

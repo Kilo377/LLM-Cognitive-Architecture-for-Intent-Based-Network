@@ -1,45 +1,41 @@
 classdef SchedulerPRBModel
-% SCHEDULERPRBMODEL v5.2 (ctrl-safe + debug)
+% SCHEDULERPRBMODEL v6.0 (Unified debug + ctrl-only + RLF safe)
 %
 % Reads:
-%   ctx.numPRBPerCell / ctx.numPRB
+%   ctx.numPRBPerCell
 %   ctx.servingCell
 %   ctx.rrPtr
 %   ctx.ctrl.cellSleepState
 %   ctx.ctrl.selectedUE
 %   ctx.scenario.traffic.model
 %   ctx.ueBlockedUntilSlot
+%   ctx.ueInOutageUntilSlot
 %
 % Writes:
 %   ctx.tmp.scheduledUE{c}
 %   ctx.tmp.prbAlloc{c}
-%   ctx.tmp.cell.prbTotal / prbUsed / schedUECount
+%   ctx.tmp.cell.*
 %   ctx.tmp.lastPRBUsedPerCell
+%   ctx.accPRBTotalPerCell
 %   ctx.rrPtr
+%   ctx.debug.trace.scheduler
 
     properties
-        prbChunk
-        actionBoost
-        maxUEPerCell
-        debugFirstSlots
+        prbChunk = 10
+        actionBoost = 0.6
+        maxUEPerCell = 4
     end
 
     methods
-        function obj = SchedulerPRBModel()
-            obj.prbChunk        = 10;
-            obj.actionBoost     = 0.6;
-            obj.maxUEPerCell    = 4;
-            obj.debugFirstSlots = 3;
-        end
 
         function ctx = step(obj, ctx)
 
             numCell = ctx.cfg.scenario.numCell;
             numUE   = ctx.cfg.scenario.numUE;
 
-            %--------------------------------------------------
+            %% ===============================
             % Init per-slot containers
-            %--------------------------------------------------
+            %% ===============================
             ctx.tmp.scheduledUE = cell(numCell,1);
             ctx.tmp.prbAlloc    = cell(numCell,1);
 
@@ -47,170 +43,195 @@ classdef SchedulerPRBModel
                 ctx.tmp.cell = struct();
             end
 
-            if ~isfield(ctx.tmp,'debug') || isempty(ctx.tmp.debug)
-                ctx.tmp.debug = struct();
-            end
-            ctx.tmp.debug.scheduler = struct();
-            ctx.tmp.debug.scheduler.selU = zeros(numCell,1);
-            ctx.tmp.debug.scheduler.selU_reason = strings(numCell,1);
+            ctx.tmp.cell.prbTotal     = ctx.numPRBPerCell(:);
+            ctx.tmp.cell.prbUsed      = zeros(numCell,1);
+            ctx.tmp.cell.schedUECount = zeros(numCell,1);
 
-            %--------------------------------------------------
-            % Per-cell PRB total
-            %--------------------------------------------------
-            if isprop(ctx,'numPRBPerCell') && numel(ctx.numPRBPerCell)==numCell
-                prbTotalVec = ctx.numPRBPerCell(:);
-            else
-                prbTotalVec = ctx.numPRB * ones(numCell,1);
-            end
+            ctx.tmp.lastPRBUsedPerCell = zeros(numCell,1);
 
-            ctx.tmp.cell.prbTotal      = prbTotalVec;
-            ctx.tmp.cell.prbUsed       = zeros(numCell,1);
-            ctx.tmp.cell.schedUECount  = zeros(numCell,1);
-
-            %--------------------------------------------------
-            % Sleep gating (from ctx.ctrl)
-            %--------------------------------------------------
+            %% ===============================
+            % Sleep gating
+            %% ===============================
             cellIsSleeping = false(numCell,1);
-            if isprop(ctx,'ctrl') && ~isempty(ctx.ctrl) && isfield(ctx.ctrl,'cellSleepState')
+            if isfield(ctx.ctrl,'cellSleepState')
                 ss = ctx.ctrl.cellSleepState(:);
                 if numel(ss)==numCell
-                    cellIsSleeping = (round(ss) >= 1);
+                    cellIsSleeping = (ss >= 1);
                 end
             end
 
-            %--------------------------------------------------
-            % Ensure lastPRBUsedPerCell exists (for Energy/Radio)
-            %--------------------------------------------------
-            if ~isfield(ctx.tmp,'lastPRBUsedPerCell') || isempty(ctx.tmp.lastPRBUsedPerCell)
-                ctx.tmp.lastPRBUsedPerCell = zeros(numCell,1);
-            end
+            %% ===============================
+            % Debug trace container
+            %% ===============================
+            slotTrace = struct();
+            slotTrace.slot = ctx.slot;
+            slotTrace.cell = cell(numCell,1);
 
-            %--------------------------------------------------
+            %% ===============================
             % Per-cell scheduling
-            %--------------------------------------------------
+            %% ===============================
             for c = 1:numCell
 
-                totalPRB = prbTotalVec(c);
+                traceC = struct();
+                totalPRB = ctx.numPRBPerCell(c);
 
-                % episode counter
-                ctx.accPRBTotalPerCell(c) = ctx.accPRBTotalPerCell(c) + totalPRB;
+                traceC.totalPRB = totalPRB;
+                traceC.reason   = "ok";
+                traceC.selectedUE = 0;
+                traceC.prbUsed  = 0;
+                traceC.numSchedUE = 0;
+
+                % Episode PRB total
+                ctx.accPRBTotalPerCell(c) = ...
+                    ctx.accPRBTotalPerCell(c) + totalPRB;
 
                 if totalPRB <= 0
-                    ctx.tmp.debug.scheduler.selU_reason(c) = "totalPRB<=0";
+                    traceC.reason = "noPRB";
+                    slotTrace.cell{c} = traceC;
                     continue;
                 end
 
                 if cellIsSleeping(c)
-                    ctx.tmp.debug.scheduler.selU_reason(c) = "cellSleeping";
+                    traceC.reason = "sleeping";
+                    slotTrace.cell{c} = traceC;
                     continue;
                 end
 
                 ueSet = find(ctx.servingCell == c);
+
                 if isempty(ueSet)
-                    ctx.tmp.debug.scheduler.selU_reason(c) = "noUEinCell";
+                    traceC.reason = "noUE";
+                    slotTrace.cell{c} = traceC;
                     continue;
                 end
 
-                ueSet = obj.filterHoBlockedUE(ctx, ueSet);
+                ueSet = obj.filterUnavailableUE(ctx, ueSet);
+
                 if isempty(ueSet)
-                    ctx.tmp.debug.scheduler.selU_reason(c) = "allHOBlocked";
+                    traceC.reason = "allBlocked";
+                    slotTrace.cell{c} = traceC;
                     continue;
                 end
 
                 ueSet = obj.filterEmptyBufferUE(ctx, ueSet);
+
                 if isempty(ueSet)
-                    ctx.tmp.debug.scheduler.selU_reason(c) = "allEmptyBuffer";
+                    traceC.reason = "emptyBuffer";
+                    slotTrace.cell{c} = traceC;
                     continue;
                 end
 
-                % Selected UE from ctrl
-                [selU, reason] = obj.getSelectedUE_fromCtrl(ctx, c, numUE, ueSet);
-                ctx.tmp.debug.scheduler.selU(c) = selU;
-                ctx.tmp.debug.scheduler.selU_reason(c) = reason;
+                [selU, selReason] = ...
+                    obj.getSelectedUE_fromCtrl(ctx, c, numUE, ueSet);
 
-                % Allocate PRB
-                [ctx, schedUE, prbAlloc] = obj.allocatePRB(ctx, c, ueSet, selU, totalPRB);
+                traceC.selectedUE = selU;
+                traceC.selectedUE_reason = selReason;
 
-                % Aggregate duplicate
-                [schedUE, prbAlloc] = obj.aggregateAlloc(schedUE, prbAlloc);
+                [ctx, schedUE, prbAlloc] = ...
+                    obj.allocatePRB(ctx, c, ueSet, selU, totalPRB);
 
-                % Enforce max UE
-                [schedUE, prbAlloc] = obj.enforceMaxUE(schedUE, prbAlloc, selU);
+                [schedUE, prbAlloc] = ...
+                    obj.aggregateAlloc(schedUE, prbAlloc);
 
-                % Finalize
+                [schedUE, prbAlloc] = ...
+                    obj.enforceMaxUE(schedUE, prbAlloc, selU);
+
                 ctx.tmp.scheduledUE{c} = schedUE(:);
                 ctx.tmp.prbAlloc{c}    = prbAlloc(:);
 
-                prbUsed = sum(prbAlloc);
-                prbUsed = min(max(prbUsed,0), totalPRB);
+                prbUsed = min(sum(prbAlloc), totalPRB);
 
-                ctx.tmp.cell.prbUsed(c)       = prbUsed;
-                ctx.tmp.cell.schedUECount(c)  = numel(schedUE);
-                ctx.tmp.lastPRBUsedPerCell(c) = prbUsed;
+                ctx.tmp.cell.prbUsed(c)      = prbUsed;
+                ctx.tmp.cell.schedUECount(c) = numel(schedUE);
+                ctx.tmp.lastPRBUsedPerCell(c)= prbUsed;
+
+                traceC.prbUsed     = prbUsed;
+                traceC.numSchedUE  = numel(schedUE);
+
+                slotTrace.cell{c} = traceC;
             end
 
-            %--------------------------------------------------
-            % Minimal debug print
-            %--------------------------------------------------
-            if ctx.slot <= obj.debugFirstSlots
-                %disp("Scheduler debug selU per cell:");
-                %disp(ctx.tmp.debug.scheduler.selU(:).');
-                %disp("Scheduler selU reason per cell:");
-                %disp(ctx.tmp.debug.scheduler.selU_reason(:).');
+            %% ===============================
+            % Write debug trace
+            %% ===============================
+            ctx = obj.writeDebugTrace(ctx, slotTrace);
+
+            if obj.shouldPrint(ctx)
+                obj.printDebug(ctx);
             end
         end
     end
 
-    %==========================================================
+    %% ==========================================================
     % Private
-    %==========================================================
+    %% ==========================================================
     methods (Access = private)
 
-        function ueSet = filterHoBlockedUE(~, ctx, ueSet)
+        function ueSet = filterUnavailableUE(~, ctx, ueSet)
+
             ok = true(size(ueSet));
+
             for i = 1:numel(ueSet)
+
                 u = ueSet(i);
-                if isprop(ctx,'ueBlockedUntilSlot') && ctx.slot < ctx.ueBlockedUntilSlot(u)
+
+                % HO interruption
+                if ctx.slot < ctx.ueBlockedUntilSlot(u)
                     ok(i) = false;
+                    continue;
+                end
+
+                % RLF outage
+                if ctx.slot < ctx.ueInOutageUntilSlot(u)
+                    ok(i) = false;
+                    continue;
                 end
             end
+
             ueSet = ueSet(ok);
         end
 
+
         function ueSet = filterEmptyBufferUE(~, ctx, ueSet)
+
             keep = false(size(ueSet));
+
             for i = 1:numel(ueSet)
                 u = ueSet(i);
                 q = ctx.scenario.traffic.model.getQueue(u);
                 keep(i) = ~isempty(q);
             end
+
             ueSet = ueSet(keep);
         end
 
-        function [selU, reason] = getSelectedUE_fromCtrl(~, ctx, c, numUE, ueSet)
+
+        function [selU, reason] = ...
+            getSelectedUE_fromCtrl(~, ctx, c, numUE, ueSet)
+
             selU = 0;
             reason = "noCtrl";
 
-            if ~isprop(ctx,'ctrl') || isempty(ctx.ctrl) || ~isfield(ctx.ctrl,'selectedUE')
+            if ~isfield(ctx.ctrl,'selectedUE')
                 return;
             end
 
             sel = ctx.ctrl.selectedUE;
 
-            if ~isvector(sel) || numel(sel) < c
-                reason = "selectedUESizeMismatch";
+            if numel(sel) < c
+                reason = "sizeMismatch";
                 return;
             end
 
             v = round(sel(c));
 
             if v < 1 || v > numUE
-                reason = "selectedUEOutOfRange";
+                reason = "outOfRange";
                 return;
             end
 
             if ~any(ueSet == v)
-                reason = "selectedUENotInThisCell";
+                reason = "notInCell";
                 return;
             end
 
@@ -218,7 +239,9 @@ classdef SchedulerPRBModel
             reason = "ok";
         end
 
-        function [ctx, schedUE, prbAlloc] = allocatePRB(obj, ctx, c, ueSet, selU, totalPRB)
+
+        function [ctx, schedUE, prbAlloc] = ...
+            allocatePRB(obj, ctx, c, ueSet, selU, totalPRB)
 
             if numel(ueSet) == 1
                 schedUE  = ueSet(:);
@@ -227,6 +250,7 @@ classdef SchedulerPRBModel
             end
 
             if selU > 0
+
                 prbSel = max(1, floor(totalPRB * obj.actionBoost));
                 prbSel = min(prbSel, totalPRB);
 
@@ -234,16 +258,22 @@ classdef SchedulerPRBModel
 
                 others = ueSet(ueSet ~= selU);
 
-                [ctx, rrList, rrAlloc] = obj.rrAllocate(ctx, c, others, prbRem);
+                [ctx, rrList, rrAlloc] = ...
+                    obj.rrAllocate(ctx, c, others, prbRem);
 
                 schedUE  = [selU; rrList(:)];
                 prbAlloc = [prbSel; rrAlloc(:)];
+
             else
-                [ctx, schedUE, prbAlloc] = obj.rrAllocate(ctx, c, ueSet, totalPRB);
+
+                [ctx, schedUE, prbAlloc] = ...
+                    obj.rrAllocate(ctx, c, ueSet, totalPRB);
             end
         end
 
-        function [ctx, ueList, alloc] = rrAllocate(obj, ctx, c, ueSet, prbBudget)
+
+        function [ctx, ueList, alloc] = ...
+            rrAllocate(obj, ctx, c, ueSet, prbBudget)
 
             ueList = [];
             alloc  = [];
@@ -252,85 +282,159 @@ classdef SchedulerPRBModel
                 return;
             end
 
-            nChunk   = ceil(prbBudget / obj.prbChunk);
-            chunkPRB = obj.prbChunk;
-
             ptr = ctx.rrPtr(c);
 
-            for k = 1:nChunk
+            while prbBudget > 0
+
                 idx = mod(ptr-1, numel(ueSet)) + 1;
                 u   = ueSet(idx);
-                ptr = ptr + 1;
 
-                prb = min(chunkPRB, prbBudget);
+                prb = min(obj.prbChunk, prbBudget);
+
+                ueList(end+1,1) = u;
+                alloc(end+1,1)  = prb;
+
                 prbBudget = prbBudget - prb;
-
-                ueList(end+1,1) = u;   %#ok<AGROW>
-                alloc(end+1,1)  = prb; %#ok<AGROW>
-
-                if prbBudget <= 0
-                    break;
-                end
+                ptr = ptr + 1;
             end
 
             ctx.rrPtr(c) = ptr;
         end
 
-        function [ueList2, alloc2] = aggregateAlloc(~, ueList, alloc)
 
-            if isempty(ueList)
-                ueList2 = ueList;
-                alloc2  = alloc;
-                return;
-            end
+        function [ueList2, alloc2] = ...
+            aggregateAlloc(~, ueList, alloc)
 
             ueList2 = [];
             alloc2  = [];
 
             for i = 1:numel(ueList)
+
                 u = ueList(i);
                 p = alloc(i);
 
                 j = find(ueList2 == u, 1);
 
                 if isempty(j)
-                    ueList2(end+1,1) = u; %#ok<AGROW>
-                    alloc2(end+1,1)  = p; %#ok<AGROW>
+                    ueList2(end+1,1) = u;
+                    alloc2(end+1,1)  = p;
                 else
                     alloc2(j) = alloc2(j) + p;
                 end
             end
         end
 
-        function [ueList, alloc] = enforceMaxUE(obj, ueList, alloc, selU)
 
-            if isempty(ueList)
-                return;
-            end
+        function [ueList, alloc] = ...
+            enforceMaxUE(obj, ueList, alloc, selU)
 
-            K = obj.maxUEPerCell;
-
-            if K <= 0
-                ueList = [];
-                alloc  = [];
-                return;
-            end
-
-            if numel(ueList) <= K
+            if numel(ueList) <= obj.maxUEPerCell
                 return;
             end
 
             if selU > 0
                 idxSel = find(ueList == selU, 1);
                 if ~isempty(idxSel)
-                    ueList = [ueList(idxSel); ueList([1:idxSel-1, idxSel+1:end])];
-                    alloc  = [alloc(idxSel);  alloc([1:idxSel-1, idxSel+1:end])];
+                    ueList = [ueList(idxSel); ...
+                              ueList([1:idxSel-1 idxSel+1:end])];
+                    alloc  = [alloc(idxSel); ...
+                              alloc([1:idxSel-1 idxSel+1:end])];
                 end
             end
 
-            ueList = ueList(1:K);
-            alloc  = alloc(1:K);
+            ueList = ueList(1:obj.maxUEPerCell);
+            alloc  = alloc(1:obj.maxUEPerCell);
         end
+
+
+        %% ===============================
+        % Debug helpers
+        %% ===============================
+        function ctx = writeDebugTrace(~, ctx, slotTrace)
+            % ===== use tmp.debug ONLY =====
+            if isempty(ctx.tmp)
+                ctx.tmp = struct();
+            end
+        
+            if ~isfield(ctx.tmp,'debug') || isempty(ctx.tmp.debug)
+                ctx.tmp.debug = struct();
+            end
+        
+            if ~isfield(ctx.tmp.debug,'trace') || isempty(ctx.tmp.debug.trace)
+                ctx.tmp.debug.trace = struct();
+            end
+        
+            t = struct();
+            t.slot = ctx.slot;
+        
+            % scheduler slot trace
+            t.slotTrace = slotTrace;
+        
+            % runtime quick health
+            t.runtime = struct();
+            t.runtime.lastPRBUsed = ctx.lastPRBUsedPerCell_slot(:).';
+            t.runtime.numPRBPerCell = ctx.numPRBPerCell(:).';
+        
+            if isfield(ctx,'sinr_dB')
+                t.runtime.meanSINR = mean(ctx.sinr_dB);
+            end
+        
+            ctx.tmp.debug.trace.scheduler = t;
+        end
+
+
+        function tf = shouldPrint(~, ctx)
+        
+            tf = false;
+        
+            if ~isfield(ctx.cfg,'debug'), return; end
+            if ~isfield(ctx.cfg.debug,'enable'), return; end
+            if ~ctx.cfg.debug.enable, return; end
+        
+            every = 1;
+            if isfield(ctx.cfg.debug,'every') && ctx.cfg.debug.every >= 1
+                every = round(ctx.cfg.debug.every);
+            end
+        
+            if mod(ctx.slot, every) ~= 0
+                return;
+            end
+        
+            if isfield(ctx.cfg.debug,'modules')
+                try
+                    ms = string(ctx.cfg.debug.modules);
+                    if ~any(ms=="scheduler") && ~any(ms=="all")
+                        return;
+                    end
+                catch
+                end
+            end
+        
+            tf = true;
+        end
+
+
+
+        function printDebug(~, ctx)
+
+            if ~isfield(ctx.tmp,'debug'), return; end
+            if ~isfield(ctx.tmp.debug,'trace'), return; end
+            if ~isfield(ctx.tmp.debug.trace,'scheduler'), return; end
+        
+            tr = ctx.tmp.debug.trace.scheduler;
+        
+            fprintf('[DEBUG][slot=%d][scheduler]\n', tr.slot);
+        
+            if isfield(tr,'runtime')
+                fprintf('  PRB used=%s\n', mat2str(tr.runtime.lastPRBUsed));
+                fprintf('  PRB total=%s\n', mat2str(tr.runtime.numPRBPerCell));
+                if isfield(tr.runtime,'meanSINR')
+                    fprintf('  meanSINR=%.2f dB\n', tr.runtime.meanSINR);
+                end
+            end
+        end
+
+
+
     end
 end
-

@@ -1,17 +1,18 @@
 classdef RanActionBus
-%RANACTIONBUS Stable control interface for modular ORAN-SIM
+% RANACTIONBUS v3 (Aligned with ctrl architecture)
 %
 % Principles:
-%   - Only RIC writes this
-%   - Kernel never validates
-%   - validate() is the only legal guard
-%   - Add-only evolution rule
+%   - RIC writes only
+%   - Kernel reads only
+%   - validate() is the only guard
+%   - Field names aligned 1:1 with ctx.ctrl
+%   - Add-only evolution
 
     methods (Static)
 
-        %% ===============================
-        % Initialize
-        %% ===============================
+        %% =========================================================
+        % INIT
+        %% =========================================================
         function action = init(cfg)
 
             numCell = cfg.scenario.numCell;
@@ -19,152 +20,118 @@ classdef RanActionBus
 
             action = struct();
 
-            %% -------- Scheduling --------
-            action.scheduling = struct();
-            action.scheduling.selectedUE = zeros(numCell,1);   % legacy
-            action.scheduling.weightUE   = ones(numUE,1);      % QoS weight override
+            %% =====================================================
+            % Scheduling
+            %% =====================================================
+            action.scheduling.selectedUE = zeros(numCell,1);
+            action.scheduling.weightUE   = ones(numUE,1);
 
-            %% -------- Power --------
-            action.power = struct();
-            action.power.cellTxPowerOffset_dB = zeros(numCell,1);
+            %% =====================================================
+            % Radio
+            %% =====================================================
+            action.radio.bandwidthScale      = ones(numCell,1);
+            action.radio.txPowerOffset_dB    = zeros(numCell,1);
+            action.radio.interferenceCouplingFactor = 1.0; % NEW
 
-            %% -------- Sleep --------
-            action.sleep = struct();
-            action.sleep.cellSleepState = zeros(numCell,1);    % 0/1/2
+            %% =====================================================
+            % Energy
+            %% =====================================================
+            action.energy.basePowerScale = ones(numCell,1);
 
-            %% -------- Handover --------
-            action.handover = struct();
+            %% =====================================================
+            % Sleep
+            %% =====================================================
+            action.sleep.cellSleepState = zeros(numCell,1);
+
+            %% =====================================================
+            % Handover
+            %% =====================================================
             action.handover.hysteresisOffset_dB = zeros(numCell,1);
             action.handover.tttOffset_slot      = zeros(numCell,1);
 
-            %% -------- Beamforming --------
-            action.beam = struct();
+            %% =====================================================
+            % Beam
+            %% =====================================================
             action.beam.ueBeamId = zeros(numUE,1);
-            action.beam.mode     = "static";  % reserved for future
+            action.beam.mode     = "static";
 
-            %% -------- QoS Control --------
-            action.qos = struct();
+            %% =====================================================
+            % RLF
+            %% =====================================================
+            action.rlf.sinrThresholdOffset_dB = 0;
+
+            %% =====================================================
+            % QoS
+            %% =====================================================
             action.qos.servicePriority = struct( ...
                 'eMBB', 1.0, ...
                 'URLLC', 1.0, ...
                 'mMTC', 1.0 );
 
-            %% -------- Radio Control --------
-            action.radio = struct();
-            action.radio.bandwidthScale = ones(numCell,1); % 0~1
-            action.radio.interferenceMitigation = false;
+            %% =====================================================
+            % Debug control (NEW)
+            %% =====================================================
+            action.debug.enableVerbose = false;
+            action.debug.printSlot     = 0;  % 0=all, else only this slot
 
-            %% -------- Energy Policy --------
-            action.energy = struct();
-            action.energy.basePowerScale = ones(numCell,1);
-
-            %% -------- RLF Control --------
-            action.rlf = struct();
-            action.rlf.sinrThresholdOffset_dB = 0;
-
-            %% -------- Reserved Extension --------
-            action.ext = struct(); % future-proof bucket
+            %% =====================================================
+            % Reserved
+            %% =====================================================
+            action.ext = struct();
         end
 
-        %% ===============================
-        % Validate
-        %% ===============================
+
+        %% =========================================================
+        % VALIDATE
+        %% =========================================================
         function action = validate(action, cfg, state)
 
             numCell = cfg.scenario.numCell;
             numUE   = cfg.scenario.numUE;
 
-            %% -------- Scheduling --------
+            %% ===============================
+            % Scheduling
+            %% ===============================
             if ~isfield(action,'scheduling')
                 action.scheduling = struct();
             end
 
-            if ~isfield(action.scheduling,'selectedUE') || ...
-               numel(action.scheduling.selectedUE) ~= numCell
-                action.scheduling.selectedUE = zeros(numCell,1);
-            else
-                sel = round(action.scheduling.selectedUE(:));
-                sel(sel < 0) = 0;
-                sel(sel > numUE) = 0;
+            sel = zeros(numCell,1);
+            if isfield(action.scheduling,'selectedUE') && ...
+               numel(action.scheduling.selectedUE)==numCell
 
-                % must belong to serving cell
-                for c = 1:numCell
-                    u = sel(c);
-                    if u>0 && state.ue.servingCell(u) ~= c
-                        sel(c) = 0;
+                tmp = round(action.scheduling.selectedUE(:));
+                tmp(tmp<0)=0;
+                tmp(tmp>numUE)=0;
+
+                for c=1:numCell
+                    u = tmp(c);
+                    if u>0 && state.ue.servingCell(u)==c
+                        sel(c)=u;
                     end
                 end
-                action.scheduling.selectedUE = sel;
             end
+            action.scheduling.selectedUE = sel;
 
             if ~isfield(action.scheduling,'weightUE') || ...
-               numel(action.scheduling.weightUE) ~= numUE
+               numel(action.scheduling.weightUE)~=numUE
                 action.scheduling.weightUE = ones(numUE,1);
             else
                 w = action.scheduling.weightUE(:);
-                w(w<0) = 0;
-                w(w>10) = 10;
+                w(w<0)=0; w(w>10)=10;
                 action.scheduling.weightUE = w;
             end
 
-            %% -------- Power --------
-            if ~isfield(action,'power') || ...
-               numel(action.power.cellTxPowerOffset_dB) ~= numCell
-                action.power.cellTxPowerOffset_dB = zeros(numCell,1);
-            else
-                action.power.cellTxPowerOffset_dB = ...
-                    max(min(action.power.cellTxPowerOffset_dB(:), 10), -10);
+            %% ===============================
+            % Radio
+            %% ===============================
+            if ~isfield(action,'radio')
+                action.radio = struct();
             end
 
-            %% -------- Sleep --------
-            if ~isfield(action,'sleep') || ...
-               numel(action.sleep.cellSleepState) ~= numCell
-                action.sleep.cellSleepState = zeros(numCell,1);
-            else
-                s = round(action.sleep.cellSleepState(:));
-                s(s<0)=0; s(s>2)=2;
-                action.sleep.cellSleepState = s;
-            end
-
-            %% -------- Handover --------
-            if ~isfield(action,'handover')
-                action.handover = struct();
-            end
-
-            if ~isfield(action.handover,'hysteresisOffset_dB') || ...
-               numel(action.handover.hysteresisOffset_dB) ~= numCell
-                action.handover.hysteresisOffset_dB = zeros(numCell,1);
-            else
-                action.handover.hysteresisOffset_dB = ...
-                    max(min(action.handover.hysteresisOffset_dB(:),5),-5);
-            end
-
-            if ~isfield(action.handover,'tttOffset_slot') || ...
-               numel(action.handover.tttOffset_slot) ~= numCell
-                action.handover.tttOffset_slot = zeros(numCell,1);
-            else
-                action.handover.tttOffset_slot = ...
-                    max(min(round(action.handover.tttOffset_slot(:)),10),-5);
-            end
-
-            %% -------- Beam --------
-            if ~isfield(action,'beam') || ...
-               numel(action.beam.ueBeamId) ~= numUE
-                action.beam.ueBeamId = zeros(numUE,1);
-            else
-                b = round(action.beam.ueBeamId(:));
-                b(b<0)=0;
-                action.beam.ueBeamId = b;
-            end
-
-            %% -------- QoS --------
-            if ~isfield(action,'qos')
-                action.qos.servicePriority = struct('eMBB',1,'URLLC',1,'mMTC',1);
-            end
-
-            %% -------- Radio --------
-            if ~isfield(action,'radio') || ...
-               numel(action.radio.bandwidthScale) ~= numCell
+            % bandwidth
+            if ~isfield(action.radio,'bandwidthScale') || ...
+               numel(action.radio.bandwidthScale)~=numCell
                 action.radio.bandwidthScale = ones(numCell,1);
             else
                 bs = action.radio.bandwidthScale(:);
@@ -172,22 +139,77 @@ classdef RanActionBus
                 action.radio.bandwidthScale = bs;
             end
 
-            %% -------- Energy --------
+            % tx power
+            if ~isfield(action.radio,'txPowerOffset_dB') || ...
+               numel(action.radio.txPowerOffset_dB)~=numCell
+                action.radio.txPowerOffset_dB = zeros(numCell,1);
+            else
+                v = action.radio.txPowerOffset_dB(:);
+                v(v<-10)=-10; v(v>10)=10;
+                action.radio.txPowerOffset_dB = v;
+            end
+
+            % interference coupling
+            if ~isfield(action.radio,'interferenceCouplingFactor')
+                action.radio.interferenceCouplingFactor = 1.0;
+            else
+                f = action.radio.interferenceCouplingFactor;
+                f = max(min(f,3.0),0.1);
+                action.radio.interferenceCouplingFactor = f;
+            end
+
+            %% ===============================
+            % Energy
+            %% ===============================
             if ~isfield(action,'energy') || ...
-               numel(action.energy.basePowerScale) ~= numCell
+               numel(action.energy.basePowerScale)~=numCell
                 action.energy.basePowerScale = ones(numCell,1);
             else
                 s = action.energy.basePowerScale(:);
-                s(s<0.2)=0.2; s(s>1.2)=1.2;
+                s(s<0.2)=0.2; s(s>1.5)=1.5;
                 action.energy.basePowerScale = s;
             end
 
-            %% -------- RLF --------
+            %% ===============================
+            % Sleep
+            %% ===============================
+            if ~isfield(action,'sleep') || ...
+               numel(action.sleep.cellSleepState)~=numCell
+                action.sleep.cellSleepState = zeros(numCell,1);
+            else
+                s = round(action.sleep.cellSleepState(:));
+                s(s<0)=0; s(s>2)=2;
+                action.sleep.cellSleepState = s;
+            end
+
+            %% ===============================
+            % Beam
+            %% ===============================
+            if ~isfield(action,'beam') || ...
+               numel(action.beam.ueBeamId)~=numUE
+                action.beam.ueBeamId = zeros(numUE,1);
+            else
+                b = round(action.beam.ueBeamId(:));
+                b(b<0)=0;
+                action.beam.ueBeamId = b;
+            end
+
+            %% ===============================
+            % RLF
+            %% ===============================
             if ~isfield(action,'rlf')
                 action.rlf.sinrThresholdOffset_dB = 0;
             else
-                action.rlf.sinrThresholdOffset_dB = ...
-                    max(min(action.rlf.sinrThresholdOffset_dB,5),-5);
+                v = action.rlf.sinrThresholdOffset_dB;
+                action.rlf.sinrThresholdOffset_dB = max(min(v,5),-5);
+            end
+
+            %% ===============================
+            % Debug
+            %% ===============================
+            if ~isfield(action,'debug')
+                action.debug.enableVerbose = false;
+                action.debug.printSlot     = 0;
             end
         end
     end

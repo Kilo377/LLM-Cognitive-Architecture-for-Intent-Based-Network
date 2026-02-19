@@ -1,35 +1,47 @@
 classdef SchedulerQoSPRbModel
-%SCHEDULERQOSPRBMODEL Multi-UE PRB scheduler with QoS + PF
+%SCHEDULERQOSPRBMODEL v2.0 (ctrl-safe + debug + per-cell PRB + QoS+PF)
 %
 % Output (per slot):
-%   ctx.tmp.scheduledUE{c} : [Kx1] UE list (can repeat)
-%   ctx.tmp.prbAlloc{c}    : [Kx1] PRB per entry
+%   ctx.tmp.scheduledUE{c} : [Kx1] UE list (unique after aggregate)
+%   ctx.tmp.prbAlloc{c}    : [Kx1] PRB per UE (aligned with scheduledUE)
 %
 % Policy:
-%   1) URLLC urgency first (min deadline, urgent count)
-%   2) then PF for eMBB-like flows (buffer/avgTput)
+%   1) URLLC urgency first (deadline / urgent count)
+%   2) PF for eMBB-like flows (buffer / avgTput)
 %   3) mMTC last
 %
-% Action hook:
-%   ctx.action.scheduling.selectedUE(c) can boost that UE with share actionBoost
+% Control hook (from ctx.ctrl):
+%   ctx.ctrl.selectedUE(c) can reserve actionBoost share for that UE
+%   (optional) ctx.ctrl.weightUE(u) can weight UE scoring
+%
+% Rules:
+%   - NEVER read ctx.action
+%   - Use ctx.ctrl only
+%   - Use ctx.numPRBPerCell(c) if available
+%   - Fill ctx.tmp.lastPRBUsedPerCell for Energy/StateBus
 
     properties
         prbChunk
         actionBoost
 
         % PF parameters
-        pfAlpha              % average throughput smoothing
-        pfEps                % prevent div0
+        pfAlpha
+        pfEps
         wUrllc
         wEmbb
         wMmtc
 
-        % URLLC urgency threshold
         urgentDeadline_slot
+
+        % safety
+        maxUEPerCell
+
+        % debug helper
+        debugFirstSlots
     end
 
     properties (Access = private)
-        avgTputBitPerUE      % moving average throughput for PF [numUE x 1]
+        avgTputBitPerUE
         initialized = false
     end
 
@@ -46,11 +58,14 @@ classdef SchedulerQoSPRbModel
             obj.wMmtc  = 0.5;
 
             obj.urgentDeadline_slot = 5;
+
+            obj.maxUEPerCell = 4;
+            obj.debugFirstSlots = 3;
         end
 
         function obj = init(obj, ctx)
             numUE = ctx.cfg.scenario.numUE;
-            obj.avgTputBitPerUE = ones(numUE,1) * 1e4; % small nonzero start
+            obj.avgTputBitPerUE = ones(numUE,1) * 1e4;
             obj.initialized = true;
         end
 
@@ -63,14 +78,29 @@ classdef SchedulerQoSPRbModel
             numCell = ctx.cfg.scenario.numCell;
             numUE   = ctx.cfg.scenario.numUE;
 
-            if ~isfield(ctx.tmp,'scheduledUE')
-                ctx.tmp.scheduledUE = cell(numCell,1);
-            end
-            if ~isfield(ctx.tmp,'prbAlloc')
-                ctx.tmp.prbAlloc = cell(numCell,1);
+            % -------------------------------------------------
+            % tmp init
+            % -------------------------------------------------
+            ctx.tmp.scheduledUE = cell(numCell,1);
+            ctx.tmp.prbAlloc    = cell(numCell,1);
+
+            if ~isfield(ctx.tmp,'cell') || isempty(ctx.tmp.cell)
+                ctx.tmp.cell = struct();
             end
 
-            % Update PF averages from last slot served bits if available
+            if ~isfield(ctx.tmp,'debug') || isempty(ctx.tmp.debug)
+                ctx.tmp.debug = struct();
+            end
+            ctx.tmp.debug.schedulerQos = struct();
+            ctx.tmp.debug.schedulerQos.selU = zeros(numCell,1);
+            ctx.tmp.debug.schedulerQos.selU_reason = strings(numCell,1);
+            ctx.tmp.debug.schedulerQos.cellReason = strings(numCell,1);
+            ctx.tmp.debug.schedulerQos.prbTotal = zeros(numCell,1);
+            ctx.tmp.debug.schedulerQos.prbUsed  = zeros(numCell,1);
+
+            % -------------------------------------------------
+            % PF average update (from last slot served bits)
+            % -------------------------------------------------
             if isfield(ctx.tmp,'lastServedBitsPerUE')
                 inst = ctx.tmp.lastServedBitsPerUE(:);
                 if numel(inst) == numUE
@@ -78,102 +108,227 @@ classdef SchedulerQoSPRbModel
                 end
             end
 
+            % -------------------------------------------------
+            % per-cell PRB total
+            % -------------------------------------------------
+            prbTotalVec = obj.getCellPrbTotal(ctx, numCell);
+            ctx.tmp.cell.prbTotal = prbTotalVec(:);
+            ctx.tmp.cell.prbUsed  = zeros(numCell,1);
+
+            % -------------------------------------------------
+            % Ensure lastPRBUsedPerCell exists
+            % -------------------------------------------------
+            ctx.tmp.lastPRBUsedPerCell = zeros(numCell,1);
+
+            % -------------------------------------------------
+            % Sleep gating (from ctrl)
+            % -------------------------------------------------
+            cellIsSleeping = false(numCell,1);
+            if isprop(ctx,'ctrl') && ~isempty(ctx.ctrl) && isfield(ctx.ctrl,'cellSleepState')
+                ss = ctx.ctrl.cellSleepState(:);
+                if numel(ss) == numCell
+                    cellIsSleeping = (round(ss) >= 1);
+                end
+            end
+
+            % -------------------------------------------------
+            % optional UE weight
+            % -------------------------------------------------
+            wUE = ones(numUE,1);
+            if isprop(ctx,'ctrl') && ~isempty(ctx.ctrl) && isfield(ctx.ctrl,'weightUE')
+                v = ctx.ctrl.weightUE(:);
+                if numel(v) == numUE
+                    wUE = max(v,0);
+                end
+            end
+
+            % -------------------------------------------------
+            % schedule each cell
+            % -------------------------------------------------
             for c = 1:numCell
 
-                % PRB total accounting
-                ctx.accPRBTotalPerCell(c) = ctx.accPRBTotalPerCell(c) + ctx.numPRB;
+                totalPRB = prbTotalVec(c);
+                ctx.tmp.debug.schedulerQos.prbTotal(c) = totalPRB;
+
+                ctx.accPRBTotalPerCell(c) = ctx.accPRBTotalPerCell(c) + totalPRB;
+
+                if totalPRB <= 0
+                    ctx.tmp.debug.schedulerQos.cellReason(c) = "totalPRB<=0";
+                    continue;
+                end
+
+                if cellIsSleeping(c)
+                    ctx.tmp.debug.schedulerQos.cellReason(c) = "cellSleeping";
+                    continue;
+                end
 
                 ueSet = find(ctx.servingCell == c);
                 if isempty(ueSet)
-                    ctx.tmp.scheduledUE{c} = [];
-                    ctx.tmp.prbAlloc{c}    = [];
+                    ctx.tmp.debug.schedulerQos.cellReason(c) = "noUEinCell";
                     continue;
                 end
 
-                % Remove outage/HO-blocked UE
                 ueSet = obj.filterBlockedUE(ctx, ueSet);
                 if isempty(ueSet)
-                    ctx.tmp.scheduledUE{c} = [];
-                    ctx.tmp.prbAlloc{c}    = [];
+                    ctx.tmp.debug.schedulerQos.cellReason(c) = "allBlocked";
                     continue;
                 end
 
-                % Remove empty buffer UE (optional, recommended)
                 ueSet = obj.filterEmptyBufferUE(ctx, ueSet);
                 if isempty(ueSet)
-                    ctx.tmp.scheduledUE{c} = [];
-                    ctx.tmp.prbAlloc{c}    = [];
+                    ctx.tmp.debug.schedulerQos.cellReason(c) = "allEmptyBuffer";
                     continue;
                 end
 
-                % Action selected UE
-                selU = obj.getSelectedUE(ctx, c, ueSet, numUE);
+                [selU, selReason] = obj.getSelectedUE_fromCtrl(ctx, c, ueSet, numUE);
+                ctx.tmp.debug.schedulerQos.selU(c) = selU;
+                ctx.tmp.debug.schedulerQos.selU_reason(c) = selReason;
 
-                % Decide PRB allocation
-                [ueList, prbList] = obj.allocateCell(ctx, c, ueSet, selU);
+                [ueList, prbList] = obj.allocateCell(ctx, ueSet, selU, totalPRB, wUE);
+
+                % aggregate duplicates
+                [ueList, prbList] = obj.aggregateAlloc(ueList, prbList);
+
+                % enforce maxUEPerCell
+                [ueList, prbList] = obj.enforceMaxUE(ueList, prbList, selU);
 
                 ctx.tmp.scheduledUE{c} = ueList(:);
                 ctx.tmp.prbAlloc{c}    = prbList(:);
+
+                prbUsed = sum(prbList);
+                prbUsed = min(max(prbUsed,0), totalPRB);
+
+                ctx.tmp.cell.prbUsed(c) = prbUsed;
+                ctx.tmp.lastPRBUsedPerCell(c) = prbUsed;
+
+                ctx.accPRBUsedPerCell(c) = ctx.accPRBUsedPerCell(c) + prbUsed;
+
+                ctx.tmp.debug.schedulerQos.prbUsed(c) = prbUsed;
+
+                if ctx.tmp.debug.schedulerQos.cellReason(c) == ""
+                    ctx.tmp.debug.schedulerQos.cellReason(c) = "ok";
+                end
+            end
+
+            % -------------------------------------------------
+            % debug print
+            % -------------------------------------------------
+            if obj.shouldPrint(ctx)
+                fprintf('[SchedulerQoS] slot=%d prbUsed=', ctx.slot);
+                fprintf(' %.0f', ctx.tmp.lastPRBUsedPerCell);
+                fprintf('\n');
             end
         end
     end
 
+    % ==========================================================
+    % private
+    % ==========================================================
     methods (Access = private)
 
-        function ueSet = filterBlockedUE(~, ctx, ueSet)
-            keep = true(size(ueSet));
-            for i = 1:numel(ueSet)
-                u = ueSet(i);
-                if isfield(ctx,'ueBlockedUntilSlot') && ctx.slot < ctx.ueBlockedUntilSlot(u)
-                    keep(i) = false;
-                end
-                if isfield(ctx,'ueInOutageUntilSlot') && ctx.slot < ctx.ueInOutageUntilSlot(u)
-                    keep(i) = false;
-                end
-            end
-            ueSet = ueSet(keep);
-        end
+        function tf = shouldPrint(obj, ctx)
+            tf = false;
 
-        function ueSet = filterEmptyBufferUE(~, ctx, ueSet)
-            keep = false(size(ueSet));
-            for i = 1:numel(ueSet)
-                u = ueSet(i);
-                q = ctx.scenario.traffic.model.getQueue(u);
-                keep(i) = ~isempty(q);
+            if ctx.slot <= obj.debugFirstSlots
+                tf = true;
             end
-            ueSet = ueSet(keep);
-        end
 
-        function selU = getSelectedUE(~, ctx, c, ueSet, numUE)
-            selU = 0;
-            if ~isempty(ctx.action) && isfield(ctx.action,'scheduling') && ...
-                    isfield(ctx.action.scheduling,'selectedUE')
-                sel = ctx.action.scheduling.selectedUE;
-                if isvector(sel) && numel(sel) >= c
-                    v = round(sel(c));
-                    if v >= 1 && v <= numUE && any(ueSet == v)
-                        selU = v;
+            if isprop(ctx,'debug') && ~isempty(ctx.debug) && isstruct(ctx.debug)
+                if isfield(ctx.debug,'enabled') && ctx.debug.enabled
+                    if ~isfield(ctx.debug,'models')
+                        tf = true;
+                        return;
+                    end
+                    if isfield(ctx.debug.models,'scheduler') && ctx.debug.models.scheduler
+                        tf = true;
+                        return;
                     end
                 end
             end
         end
 
-        function [ueList, prbList] = allocateCell(obj, ctx, c, ueSet, selU)
+        function prbTotalVec = getCellPrbTotal(~, ctx, numCell)
+            if isprop(ctx,'numPRBPerCell') && numel(ctx.numPRBPerCell) == numCell
+                prbTotalVec = ctx.numPRBPerCell(:);
+                return;
+            end
+            prbTotalVec = ctx.numPRB * ones(numCell,1);
+        end
 
-            totalPRB = ctx.numPRB;
+        function ueSet = filterBlockedUE(~, ctx, ueSet)
+            keep = true(size(ueSet));
 
-            % If action selects one UE, reserve a share for it
+            for i = 1:numel(ueSet)
+                u = ueSet(i);
+
+                if isprop(ctx,'ueBlockedUntilSlot') && ctx.slot < ctx.ueBlockedUntilSlot(u)
+                    keep(i) = false;
+                end
+
+                if isprop(ctx,'ueInOutageUntilSlot') && ctx.slot < ctx.ueInOutageUntilSlot(u)
+                    keep(i) = false;
+                end
+            end
+
+            ueSet = ueSet(keep);
+        end
+
+        function ueSet = filterEmptyBufferUE(~, ctx, ueSet)
+            keep = false(size(ueSet));
+
+            for i = 1:numel(ueSet)
+                u = ueSet(i);
+                q = ctx.scenario.traffic.model.getQueue(u);
+                keep(i) = ~isempty(q);
+            end
+
+            ueSet = ueSet(keep);
+        end
+
+        function [selU, reason] = getSelectedUE_fromCtrl(~, ctx, c, ueSet, numUE)
+
+            selU = 0;
+            reason = "noCtrl";
+
+            if ~isprop(ctx,'ctrl') || isempty(ctx.ctrl) || ~isfield(ctx.ctrl,'selectedUE')
+                return;
+            end
+
+            sel = ctx.ctrl.selectedUE;
+
+            if ~isvector(sel) || numel(sel) < c
+                reason = "selectedUESizeMismatch";
+                return;
+            end
+
+            v = round(sel(c));
+            if v < 1 || v > numUE
+                reason = "selectedUEOutOfRange";
+                return;
+            end
+
+            if ~any(ueSet == v)
+                reason = "selectedUENotInThisCell";
+                return;
+            end
+
+            selU = v;
+            reason = "ok";
+        end
+
+        function [ueList, prbList] = allocateCell(obj, ctx, ueSet, selU, totalPRB, wUE)
+
             prbSel = 0;
             if selU > 0
                 prbSel = max(1, floor(totalPRB * obj.actionBoost));
                 prbSel = min(prbSel, totalPRB);
             end
+
             prbRem = totalPRB - prbSel;
 
-            ueList = [];
+            ueList  = [];
             prbList = [];
 
-            % Give reserved PRB to selected UE first
             if prbSel > 0
                 ueList(end+1,1)  = selU; %#ok<AGROW>
                 prbList(end+1,1) = prbSel; %#ok<AGROW>
@@ -184,7 +339,6 @@ classdef SchedulerQoSPRbModel
                 return;
             end
 
-            % Fill remaining PRB chunk by chunk using QoS scoring
             nChunk = ceil(prbRem / obj.prbChunk);
             prbBudget = prbRem;
 
@@ -193,24 +347,17 @@ classdef SchedulerQoSPRbModel
                     break;
                 end
 
-                % pick UE by QoS score
-                u = obj.pickUE(ctx, ueSet);
+                u = obj.pickUE(ctx, ueSet, wUE);
 
                 prb = min(obj.prbChunk, prbBudget);
                 prbBudget = prbBudget - prb;
 
                 ueList(end+1,1)  = u; %#ok<AGROW>
                 prbList(end+1,1) = prb; %#ok<AGROW>
-
-                % remove UE if its buffer is now small? (optional)
-                % keep it for now; PHY/Traffic will drain.
             end
-
-            % Round-robin tie-breaker can be added later if needed
-            % ctx.rrPtr not required here
         end
 
-        function u = pickUE(obj, ctx, ueSet)
+        function u = pickUE(obj, ctx, ueSet, wUE)
 
             score = -inf(size(ueSet));
 
@@ -222,25 +369,19 @@ classdef SchedulerQoSPRbModel
                     continue;
                 end
 
-                % Summaries
                 [bufBits, urgentCnt, minDL, hasURLLC, hasMMTC] = obj.summarizeQueue(q);
 
-                % QoS weights
                 w = obj.wEmbb;
-
                 if hasURLLC && minDL <= obj.urgentDeadline_slot
                     w = obj.wUrllc;
                 elseif hasMMTC && ~hasURLLC
                     w = obj.wMmtc;
                 end
 
-                % PF term: demand / avgThroughput
                 pf = bufBits / max(obj.avgTputBitPerUE(uu), obj.pfEps);
-
-                % urgency bump
                 urgBump = 1 + 0.3*urgentCnt;
 
-                score(i) = w * pf * urgBump;
+                score(i) = w * pf * urgBump * wUE(uu);
             end
 
             [~, idx] = max(score);
@@ -248,12 +389,15 @@ classdef SchedulerQoSPRbModel
         end
 
         function [bufBits, urgentCnt, minDL, hasURLLC, hasMMTC] = summarizeQueue(~, q)
+
             sizes = [q.size];
             bufBits = sum(sizes);
 
             dl = [q.deadline];
-            hasURLLC = any(strcmp({q.type}, 'URLLC'));
-            hasMMTC  = any(strcmp({q.type}, 'mMTC'));
+
+            t = {q.type};
+            hasURLLC = any(strcmp(t,'URLLC'));
+            hasMMTC  = any(strcmp(t,'mMTC'));
 
             urgentCnt = sum(isfinite(dl) & dl <= 5);
 
@@ -262,6 +406,67 @@ classdef SchedulerQoSPRbModel
             else
                 minDL = inf;
             end
+        end
+
+        function [ue2, prb2] = aggregateAlloc(~, ueList, prbList)
+
+            if isempty(ueList)
+                ue2  = ueList;
+                prb2 = prbList;
+                return;
+            end
+
+            ue2  = [];
+            prb2 = [];
+
+            for i = 1:numel(ueList)
+                u = ueList(i);
+                p = prbList(i);
+
+                j = find(ue2 == u, 1);
+                if isempty(j)
+                    ue2(end+1,1)  = u; %#ok<AGROW>
+                    prb2(end+1,1) = p; %#ok<AGROW>
+                else
+                    prb2(j) = prb2(j) + p;
+                end
+            end
+        end
+
+        function [ueList, prbList] = enforceMaxUE(obj, ueList, prbList, selU)
+
+            if isempty(ueList)
+                return;
+            end
+
+            K = obj.maxUEPerCell;
+            if K <= 0
+                ueList = [];
+                prbList = [];
+                return;
+            end
+
+            if numel(ueList) <= K
+                return;
+            end
+
+            % keep selU first if exists
+            if selU > 0
+                idxSel = find(ueList == selU, 1);
+                if ~isempty(idxSel)
+                    ueList = [ueList(idxSel); ueList([1:idxSel-1, idxSel+1:end])];
+                    prbList = [prbList(idxSel); prbList([1:idxSel-1, idxSel+1:end])];
+                end
+            end
+
+            % keep top-K by PRB
+            % stable sort by prb desc, keep first K
+            [~, ord] = sort(prbList, 'descend');
+            ueList = ueList(ord);
+            prbList = prbList(ord);
+
+            ueList = ueList(1:K);
+            prbList = prbList(1:K);
         end
     end
 end

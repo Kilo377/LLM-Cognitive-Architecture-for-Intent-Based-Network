@@ -1,87 +1,111 @@
 function scenario = ScenarioBuilder(cfg)
-%SCENARIOBUILDER Build 5G NR simulation scenario
-%   Output:
-%     scenario: struct containing topology, mobility, traffic, channel
 
-    fprintf('[ScenarioBuilder] Build scenario\n');
+fprintf('[ScenarioBuilder] Build scenario\n');
 
-    %% ===============================
-    % 1. 基本仿真参数
-    %% ===============================
-    scenario.sim.slotDuration = cfg.sim.slotDuration;
-    scenario.sim.numSlot      = cfg.sim.slotPerEpisode;
+rng(cfg.sim.randomSeed);   % 可复现
 
-    %% ===============================
-    % 2. 网络拓扑
-    %% ===============================
-    scenario.topology.numCell = cfg.scenario.numCell;
-    scenario.topology.numUE   = cfg.scenario.numUE;
+%% ===============================
+% 1. Basic simulation
+%% ===============================
+scenario.sim.slotDuration = cfg.sim.slotDuration;
+scenario.sim.numSlot      = cfg.sim.slotPerEpisode;
 
-    % 基站位置（1 宏 + 3 小区）
-    % 单位：meter
-    scenario.topology.gNBPos = [
-        0,   0,   25;   % Macro
-        200, 0,   10;   % Cell 1
-       -200, 0,   10;   % Cell 2
-        0,  200,  10;   % Cell 3
-    ];
+%% ===============================
+% 2. Topology
+%% ===============================
+numCell = cfg.scenario.numCell;
+numUE   = cfg.scenario.numUE;
 
-    % UE 初始位置（随机）
-    rng(1);
-    scenario.topology.ueInitPos = [
-        300 * (rand(cfg.scenario.numUE,2) - 0.5), ...
-        1.5 * ones(cfg.scenario.numUE,1)
-    ];
+scenario.topology.numCell = numCell;
+scenario.topology.numUE   = numUE;
 
-    %% ===============================
-    % 3. UE 移动模型
-    %% ===============================
-    
-    scenario.mobility.model = UEMobilityModel( ...
-        'numUE', cfg.scenario.numUE, ...
-        'initPos', scenario.topology.ueInitPos, ...
-        'areaX', [-400 400], ...
-        'areaY', [-400 400], ...
-        'speedRange', [1 25], ...
-        'highSpeedRatio', 0.3, ...
-        'pauseTime', 0 ...
-    );
+% ---- gNB layout: 1 center + others in circle ----
 
+gNBPos = zeros(numCell,3);
 
-    %% ===============================
-    % 4. 业务模型
-    %% ===============================
-    scenario.traffic.model = TrafficModel( ...
-    'numUE', cfg.scenario.numUE, ...
-    'slotDuration', cfg.sim.slotDuration ...
-    );
-    
-    %% ===============================
-    % 5. 信道模型配置
-    %% ===============================
-    scenario.channel.type = 'CDL';
+if numCell == 1
+    gNBPos(1,:) = [0 0 25];
+else
+    % Cell 1 at center (macro)
+    gNBPos(1,:) = [0 0 25];
 
-    scenario.channel.cdl = struct();
-    scenario.channel.cdl.DelayProfile = 'CDL-D';
-    scenario.channel.cdl.DelaySpread  = 300e-9;
-    scenario.channel.cdl.CarrierFreq  = 3.5e9;
-    scenario.channel.cdl.MaxDoppler   = 30;
+    % Others around circle
+    radius = 250;
 
-    %% ===============================
-    % 6. 基线无线参数
-    %% ===============================
-    scenario.radio.txPower.cell = 40;     % dBm
-    scenario.radio.txPower.ue   = 23;     % dBm
+    angles = linspace(0, 2*pi, numCell); 
+    angles(end) = [];   % remove duplicate 2π
 
-    scenario.radio.bandwidth = 20e6;
-    scenario.radio.scs       = 30e3;
+    for c = 2:numCell
+        gNBPos(c,1) = radius * cos(angles(c-1));
+        gNBPos(c,2) = radius * sin(angles(c-1));
+        gNBPos(c,3) = 10;
+    end
+end
 
-    %% ===============================
-    % 7. 能耗模型参数
-    %% ===============================
-    scenario.energy.P0 = 200;   % W
-    scenario.energy.k  = 4;
+scenario.topology.gNBPos = gNBPos;
 
-    fprintf('[ScenarioBuilder] Scenario ready\n');
+% ---- UE initial positions ----
+
+areaR = 400;
+
+theta = 2*pi*rand(numUE,1);
+r     = areaR*sqrt(rand(numUE,1));
+
+x = r .* cos(theta);
+y = r .* sin(theta);
+z = 1.5 * ones(numUE,1);
+
+scenario.topology.ueInitPos = [x y z];
+
+%% ===============================
+% 3. Mobility
+%% ===============================
+
+scenario.mobility.model = UEMobilityModel( ...
+    'numUE', numUE, ...
+    'initPos', scenario.topology.ueInitPos, ...
+    'areaX', [-areaR areaR], ...
+    'areaY', [-areaR areaR], ...
+    'speedRange', [1 25], ...
+    'highSpeedRatio', 0.3, ...
+    'pauseTime', 0 );
+
+%% ===============================
+% 4. Traffic
+%% ===============================
+
+scenario.traffic.model = TrafficModel( ...
+    'numUE', numUE, ...
+    'slotDuration', cfg.sim.slotDuration );
+
+%% ===============================
+% 5. Channel
+%% ===============================
+
+scenario.channel.type = 'CDL';
+
+scenario.channel.cdl.DelayProfile = 'CDL-D';
+scenario.channel.cdl.DelaySpread  = 300e-9;
+scenario.channel.cdl.CarrierFreq  = 3.5e9;
+scenario.channel.cdl.MaxDoppler   = 30;
+
+%% ===============================
+% 6. Radio baseline
+%% ===============================
+
+scenario.radio.txPower.cell = 40;
+scenario.radio.txPower.ue   = 23;
+
+scenario.radio.bandwidth = 20e6;
+scenario.radio.scs       = 30e3;
+
+%% ===============================
+% 7. Energy baseline
+%% ===============================
+
+scenario.energy.P0 = 800;
+scenario.energy.k  = 4;
+
+fprintf('[ScenarioBuilder] Scenario ready\n');
 
 end

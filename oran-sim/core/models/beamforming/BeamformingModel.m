@@ -1,17 +1,19 @@
 classdef BeamformingModel
-%BEAMFORMINGMODEL System-level beamforming gain model
+%BEAMFORMINGMODEL v2 (ctrl-first + unified debug + stable semantics)
 %
-% Reads:
-%   ctx.uePos [numUE x 3]
-%   ctx.scenario.topology.gNBPos [numCell x 3]
-%   ctx.action.beam.ueBeamId [numUE x 1] (optional)
+% Reads (preferred):
+%   ctx.ctrl.ueBeamId        [numUE x 1]  0 means no control
+%   ctx.ctrl.beamMode        string (optional)
+%
+% Backward-compat (optional fallback):
+%   ctx.action.beam.ueBeamId
 %
 % Writes:
-%   ctx.tmp.beamGain_dB [numUE x numCell]
+%   ctx.tmp.beamGain_dB      [numUE x numCell]
+%   ctx.tmp.debug.beam       (optional)
 %
-% Usage:
-%   ctx = beam.step(ctx);
-%   RadioModel should add ctx.tmp.beamGain_dB into RSRP.
+% Debug:
+%   obj = obj.setDebug(enable, firstSlots)
 
     properties
         numBeamPerCell
@@ -19,9 +21,13 @@ classdef BeamformingModel
         mainLobeGain_dB
         sideLobeGain_dB
         beamwidth3dB_deg
-        mismatchPenalty_dB       % penalty when UE does not control beam
+        mismatchPenalty_dB
         defaultPolicy            % "best" | "slightly_suboptimal" | "random"
         perCellSeed
+
+        % Debug
+        debugEnable
+        debugFirstSlots
     end
 
     methods
@@ -45,6 +51,16 @@ classdef BeamformingModel
             obj.perCellSeed        = p.Results.perCellSeed;
 
             obj.beamAzimuth_rad = [];
+
+            obj.debugEnable     = false;
+            obj.debugFirstSlots = 3;
+        end
+
+        function obj = setDebug(obj, enable, firstSlots)
+            if nargin < 2, enable = true; end
+            if nargin < 3, firstSlots = obj.debugFirstSlots; end
+            obj.debugEnable     = logical(enable);
+            obj.debugFirstSlots = max(0, round(firstSlots));
         end
 
         function obj = initialize(obj, ctx)
@@ -53,7 +69,6 @@ classdef BeamformingModel
 
             obj.beamAzimuth_rad = zeros(numCell, nb);
 
-            % Uniform beams in [-pi, pi)
             for c = 1:numCell
                 for b = 1:nb
                     obj.beamAzimuth_rad(c,b) = -pi + (2*pi)*(b-1)/nb;
@@ -70,19 +85,41 @@ classdef BeamformingModel
                 obj = obj.initialize(ctx);
             end
 
-            gNB = ctx.scenario.topology.gNBPos;
+            % gNB position compatibility
+            if isfield(ctx.scenario,'topology') && isfield(ctx.scenario.topology,'gNBPos')
+                gNB = ctx.scenario.topology.gNBPos;
+            else
+                gNB = ctx.scenario.topology.gNBPos_m;
+            end
 
             if ~isfield(ctx,'tmp') || isempty(ctx.tmp)
                 ctx.tmp = struct();
             end
             ctx.tmp.beamGain_dB = zeros(numUE, numCell);
 
-            % Read action
+            % -----------------------------
+            % 1) Control source (ctrl-first)
+            % -----------------------------
             ueBeamId = zeros(numUE,1);
             hasControl = false(numUE,1);
+            mode = "static";
 
-            if ~isempty(ctx.action) && isfield(ctx.action,'beam') && ...
-                    isfield(ctx.action.beam,'ueBeamId')
+            if isfield(ctx,'ctrl') && ~isempty(ctx.ctrl)
+                if isfield(ctx.ctrl,'ueBeamId')
+                    v = ctx.ctrl.ueBeamId;
+                    if isnumeric(v) && numel(v)==numUE
+                        ueBeamId = round(v(:));
+                        ueBeamId(ueBeamId < 0) = 0;
+                        hasControl = ueBeamId > 0;
+                    end
+                end
+                if isfield(ctx.ctrl,'beamMode')
+                    mode = ctx.ctrl.beamMode;
+                end
+            end
+
+            % Backward fallback (only when ctrl is not present)
+            if ~any(hasControl) && ~isempty(ctx.action) && isfield(ctx.action,'beam') && isfield(ctx.action.beam,'ueBeamId')
                 v = ctx.action.beam.ueBeamId;
                 if isnumeric(v) && numel(v)==numUE
                     ueBeamId = round(v(:));
@@ -91,14 +128,15 @@ classdef BeamformingModel
                 end
             end
 
-            % Compute gain per UE per cell
+            % -----------------------------
+            % 2) Compute beam gain
+            % -----------------------------
             for u = 1:numUE
                 for c = 1:numCell
 
-                    % UE direction (azimuth) as seen from cell c
                     dx = ctx.uePos(u,1) - gNB(c,1);
                     dy = ctx.uePos(u,2) - gNB(c,2);
-                    phi = atan2(dy, dx); % [-pi,pi]
+                    phi = atan2(dy, dx);
 
                     if hasControl(u)
                         b = mod(ueBeamId(u)-1, obj.numBeamPerCell) + 1;
@@ -108,8 +146,28 @@ classdef BeamformingModel
                         gain = obj.defaultGain(phi, c);
                     end
 
+                    % optional future mode hooks
+                    if mode == "static"
+                        % do nothing
+                    end
+
                     ctx.tmp.beamGain_dB(u,c) = gain;
                 end
+            end
+
+            % -----------------------------
+            % 3) Debug
+            % -----------------------------
+            if obj.debugEnable && ctx.slot <= obj.debugFirstSlots
+                if ~isfield(ctx.tmp,'debug') || isempty(ctx.tmp.debug)
+                    ctx.tmp.debug = struct();
+                end
+                ctx.tmp.debug.beam = struct();
+                ctx.tmp.debug.beam.slot = ctx.slot;
+                ctx.tmp.debug.beam.mode = mode;
+                ctx.tmp.debug.beam.hasControlCount = sum(hasControl);
+                ctx.tmp.debug.beam.ueBeamId_head = ueBeamId(1:min(10,numUE));
+                %disp("Beam debug slot=" + ctx.slot + ", hasCtrl=" + sum(hasControl));
             end
         end
     end
@@ -119,7 +177,6 @@ classdef BeamformingModel
         function gain = defaultGain(obj, phi, c)
             nb = obj.numBeamPerCell;
 
-            % choose best beam as baseline
             best = -inf;
             for b = 1:nb
                 g = obj.patternGain(phi, obj.beamAzimuth_rad(c,b));
@@ -134,26 +191,22 @@ classdef BeamformingModel
             end
 
             if obj.defaultPolicy == "random"
+                rng(obj.perCellSeed + c);
                 b = randi(nb);
                 gain = obj.patternGain(phi, obj.beamAzimuth_rad(c,b));
                 gain = gain - obj.mismatchPenalty_dB;
                 return;
             end
 
-            % slightly_suboptimal:
-            % take best beam then subtract a small penalty to mimic imperfect baseline
             gain = best - obj.mismatchPenalty_dB;
         end
 
         function gain = patternGain(obj, phi, phi_b)
-            % Mainlobe/side-lobe smooth pattern:
-            % Use wrapped angle error and a Gaussian-like mainlobe.
             d = obj.wrapToPi(phi - phi_b);
 
-            sigma = deg2rad(obj.beamwidth3dB_deg) / 2.355; % 3dB width -> sigma
+            sigma = deg2rad(obj.beamwidth3dB_deg) / 2.355;
             main = obj.mainLobeGain_dB * exp(-(d.^2)/(2*sigma^2));
 
-            % clamp to sidelobe floor
             gain = max(main, obj.sideLobeGain_dB);
         end
 
@@ -162,3 +215,4 @@ classdef BeamformingModel
         end
     end
 end
+

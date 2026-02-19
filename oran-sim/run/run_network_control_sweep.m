@@ -1,6 +1,8 @@
 function resultTable = run_network_control_sweep()
 
     clc;
+    format long g     % 关闭 1.0e+03 * 缩放显示
+    format compact
 
     rootDir = setup_path();
     cfgBase = default_config();
@@ -25,11 +27,12 @@ function resultTable = run_network_control_sweep()
         "energy_0.8"
         "energy_1.1"
         "sched_boostUE1"
+        "sched_boostMulti"
     };
 
     fprintf('\n=========== Network Control Sweep ===========\n');
-    fprintf(['%-15s %-10s %-8s %-8s %-8s %-8s %-8s %-8s %-8s %-8s\n'], ...
-        'Exp','Thr(M)','Energy','SINR','MCS','BLER','DropR','HO','RLF','PRButil');
+    fprintf(['%-18s %-12s %-12s %-10s %-8s %-8s %-8s %-8s %-8s %-8s\n'], ...
+        'Exp','Thr(Mbps)','Energy(J)','SINR','MCS','BLER','DropR','HO','RLF','PRButil');
 
     resultTable = [];
 
@@ -59,9 +62,13 @@ function resultTable = run_network_control_sweep()
         % Get final state + KPI
         %==============================
         state  = ran.getState();
+        disp("UE per cell distribution:");
+    for c=1:cfg.scenario.numCell
+        disp([ "Cell ", num2str(c), " UE count: ", ...
+            num2str(sum(state.ue.servingCell==c)) ]);
+    end
         report = ran.finalize();
-
-        kpi = state.kpi;
+        kpi    = state.kpi;
 
         % ---- derive drop ratio ----
         totalBits = sum(kpi.throughputBitPerUE);
@@ -72,9 +79,9 @@ function resultTable = run_network_control_sweep()
         prbUtilMean = mean(kpi.prbUtilPerCell);
 
         %==============================
-        % Print
+        % Print (强制普通浮点格式)
         %==============================
-        fprintf(['%-15s %-10.2f %-8.2f %-8.2f %-8.2f %-8.4f %-8.4f %-8d %-8d %-8.2f\n'], ...
+        fprintf(['%-18s %-12.4f %-12.2f %-10.4f %-8.2f %-8.5f %-8.5f %-8d %-8d %-8.4f\n'], ...
             expName, ...
             report.throughput_bps_total/1e6, ...
             report.energy_J_total, ...
@@ -107,6 +114,7 @@ end
 function action = build_action(expName, cfg)
 
     numCell = cfg.scenario.numCell;
+    numUE   = cfg.scenario.numUE;
 
     action = struct();
 
@@ -138,6 +146,18 @@ function action = build_action(expName, cfg)
 
         case "sched_boostUE1"
             action.scheduling.selectedUE = ones(numCell,1);
+
+        case "sched_boostMulti"
+
+            % Boost UE: 1,5,10,15,20
+            boostList = [1 5 10 15 20];
+            boostList = boostList(boostList <= numUE);
+
+            % 映射到 cell 1
+            sel = zeros(numCell,1);
+            sel(1) = boostList(1);
+
+            action.scheduling.selectedUE = sel;
 
         otherwise
             % baseline

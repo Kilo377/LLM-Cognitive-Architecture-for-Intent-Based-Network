@@ -1,15 +1,12 @@
 classdef RadioModel < handle
-% RADIOMODEL v8.0 (High-Coupling Competitive Version)
+% RADIOMODEL v9.0 (ORAN Conflict-Oriented Version)
 %
-% 强化干扰竞争模型：
-%   1) 功率放大干扰采用指数级映射
-%   2) 带宽影响通过资源竞争 + 噪声同时作用
-%   3) 负载对干扰为超线性
-%   4) 加入边缘UE干扰放大
-%   5) 加入SINR压缩，避免无限增长
-%
-% Debug接口保持统一：
-%   ctx.tmp.debug.trace.radio
+% 目标：
+%   - Beam真正参与RSRP
+%   - Fast fading改为per-link
+%   - 引入PRB overlap干扰
+%   - 输出interference给KPI
+%   - 保持强耦合竞争结构
 %
 
     properties
@@ -23,17 +20,19 @@ classdef RadioModel < handle
         noiseFigure_dB = 7
         temperature_K  = 290
 
-        % Load model
+        % Load
         interfMinLoad = 0.05
         loadSmoothFactor = 0.8
 
-        % ===== 强耦合参数 =====
-        kTxExp      = 0.35   % 功率指数耦合
-        kBwExp      = 0.8    % 带宽指数耦合
-        kLoadExp    = 1.8    % 负载超线性
-        edgeBoost   = 1.6    % 边缘UE干扰放大
+        % Coupling
+        kTxExp   = 0.35
+        kBwExp   = 0.8
+        kLoadExp = 1.5
+        edgeBoost = 1.5
+
+        % SINR compression
         sinrCompressThreshold_dB = 25
-        sinrCompressSlope        = 0.6
+        sinrCompressSlope = 0.6
 
         % Fading
         fastFadeSigmaLow_dB  = 1
@@ -49,10 +48,11 @@ classdef RadioModel < handle
     methods
 
         function initialize(obj, ctx)
+
             numUE   = ctx.cfg.scenario.numUE;
             numCell = ctx.cfg.scenario.numCell;
 
-            obj.shadowField  = obj.shadowingStd_dB * randn(numUE, numCell);
+            obj.shadowField  = obj.shadowingStd_dB * randn(numUE,numCell);
             obj.smoothedLoad = ones(numCell,1) * 0.5;
             obj.lastUEPos    = ctx.uePos;
         end
@@ -66,14 +66,11 @@ classdef RadioModel < handle
                 obj.initialize(ctx);
             end
 
-            % =============================
-            % gNB position
-            % =============================
             gNB = ctx.scenario.topology.gNBPos;
 
-            % =============================
-            % Shadow update
-            % =============================
+            %% =========================================
+            % 1️⃣ Shadow update
+            %% =========================================
             deltaPos = vecnorm(ctx.uePos - obj.lastUEPos,2,2);
             obj.lastUEPos = ctx.uePos;
 
@@ -85,21 +82,23 @@ classdef RadioModel < handle
                     sqrt(max(1-corr^2,0))*newShadow;
             end
 
-            % =============================
-            % Tx power
-            % =============================
-            txPower = ctx.txPowerCell_dBm(:);
-            txPower = min(max(txPower,-50),80);
+            %% =========================================
+            % 2️⃣ Fast fading (PER-LINK 修复)
+            %% =========================================
+            v = deltaPos / max(ctx.dt,1e-12);
+            sigma = obj.fastFadeSigmaLow_dB * ones(numUE,1);
+            sigma(v >= obj.speedThreshold_mps) = obj.fastFadeSigmaHigh_dB;
 
-            % =============================
-            % PRB load
-            % =============================
+            fastFade = randn(numUE,numCell) .* sigma;
+
+            %% =========================================
+            % 3️⃣ Load smoothing
+            %% =========================================
             prbTotal = ctx.numPRBPerCell(:);
             prbUsed  = ctx.lastPRBUsedPerCell_slot(:);
 
             instLoad = prbUsed ./ max(prbTotal,1);
-            instLoad = max(instLoad, obj.interfMinLoad);
-            instLoad = min(instLoad,1);
+            instLoad = min(max(instLoad,obj.interfMinLoad),1);
 
             obj.smoothedLoad = ...
                 obj.loadSmoothFactor * obj.smoothedLoad + ...
@@ -107,68 +106,62 @@ classdef RadioModel < handle
 
             load = obj.smoothedLoad;
 
-            % =============================
-            % Bandwidth
-            % =============================
-            BWcell = ctx.bandwidthHzPerCell(:);
-            BWcell = max(BWcell,1e3);
+            %% =========================================
+            % 4️⃣ RSRP计算（加入Beam）
+            %% =========================================
+            txPower = min(max(ctx.txPowerCell_dBm(:),-50),80);
 
-            % =============================
-            % Noise
-            % =============================
-            kB = 1.38e-23;
-            noiseW = kB*obj.temperature_K .* BWcell;
-            noiseW = noiseW * 10^(obj.noiseFigure_dB/10);
-            noiseW = max(noiseW,1e-20);
-
-            % =============================
-            % Fast fading
-            % =============================
-            v = deltaPos / max(ctx.dt,1e-12);
-            sigmaFF = obj.fastFadeSigmaLow_dB * ones(numUE,1);
-            sigmaFF(v >= obj.speedThreshold_mps) = obj.fastFadeSigmaHigh_dB;
-            fastFade = sigmaFF .* randn(numUE,1);
-
-            % =============================
-            % RSRP
-            % =============================
             rsrp = zeros(numUE,numCell);
 
             for c=1:numCell
+
                 d = vecnorm(ctx.uePos - gNB(c,:),2,2);
                 d = max(d,1);
                 pl = 10*obj.pathlossExp*log10(d);
 
-                rsrp(:,c) = txPower(c) - pl + ...
-                            obj.shadowField(:,c) + ...
-                            fastFade;
+                beamGain = 0;
+                if isfield(ctx.tmp,'beamGain_dB')
+                    beamGain = ctx.tmp.beamGain_dB(:,c);
+                end
+
+                rsrp(:,c) = txPower(c) ...
+                            - pl ...
+                            + obj.shadowField(:,c) ...
+                            + fastFade(:,c) ...
+                            + beamGain;
             end
 
             ctx.rsrp_dBm = rsrp;
 
-            % =============================
-            % 干扰耦合构建
-            % =============================
+            %% =========================================
+            % 5️⃣ 干扰耦合
+            %% =========================================
 
-            % 1️⃣ 功率指数耦合
+            BWcell = max(ctx.bandwidthHzPerCell(:),1e3);
+
             txRef = median(txPower);
-            txRatio = 10.^((txPower - txRef)/10);
-            txPart = txRatio .^ obj.kTxExp;
+            txPart = (10.^((txPower - txRef)/10)).^obj.kTxExp;
 
-            % 2️⃣ 带宽耦合
             bwRef = median(BWcell);
-            bwRatio = BWcell / bwRef;
-            bwPart = bwRatio .^ obj.kBwExp;
+            bwPart = (BWcell/bwRef).^obj.kBwExp;
 
-            % 3️⃣ 负载超线性
-            loadPart = load .^ obj.kLoadExp;
+            loadPart = load.^obj.kLoadExp;
 
             interfScale = txPart .* bwPart .* loadPart;
 
-            % =============================
-            % SINR计算
-            % =============================
+            %% =========================================
+            % 6️⃣ Noise
+            %% =========================================
+            kB = 1.38e-23;
+            noiseW = kB * obj.temperature_K .* BWcell;
+            noiseW = noiseW * 10^(obj.noiseFigure_dB/10);
+            noiseW = max(noiseW,1e-20);
+
+            %% =========================================
+            % 7️⃣ SINR计算 + overlap
+            %% =========================================
             sinr_dB = zeros(numUE,1);
+            interf_dBm = zeros(numUE,1);
 
             for u=1:numUE
 
@@ -180,6 +173,7 @@ classdef RadioModel < handle
                 sigW = 10.^((rsrp(u,s)-30)/10);
 
                 interfW = 0;
+
                 for c=1:numCell
                     if c==s
                         continue;
@@ -187,20 +181,24 @@ classdef RadioModel < handle
 
                     pW = 10.^((rsrp(u,c)-30)/10);
 
-                    % 边缘UE增强干扰
+                    % PRB overlap
+                    overlap = min(load(s), load(c));
+
+                    % 边缘UE增强
                     if rsrp(u,s) < median(rsrp(u,:))
                         edgeFactor = obj.edgeBoost;
                     else
                         edgeFactor = 1;
                     end
 
-                    interfW = interfW + pW * interfScale(c) * edgeFactor;
+                    interfW = interfW + ...
+                        pW * interfScale(c) * overlap * edgeFactor;
                 end
 
                 sinrW = sigW / (interfW + noiseW(s) + 1e-15);
+
                 sinr = 10*log10(max(sinrW,1e-12));
 
-                % 4️⃣ SINR压缩
                 if sinr > obj.sinrCompressThreshold_dB
                     excess = sinr - obj.sinrCompressThreshold_dB;
                     sinr = obj.sinrCompressThreshold_dB + ...
@@ -208,14 +206,22 @@ classdef RadioModel < handle
                 end
 
                 sinr_dB(u) = sinr;
+
+                interf_dBm(u) = 10*log10(max(interfW,1e-15)) + 30;
             end
 
             ctx.sinr_dB = sinr_dB;
             ctx.tmp.meanSinr_dB = mean(sinr_dB);
 
-            % =============================
-            % Debug trace
-            % =============================
+            % 👉 输出给KPI
+            if ~isfield(ctx.tmp,'channel')
+                ctx.tmp.channel = struct();
+            end
+            ctx.tmp.channel.interference_dBm = interf_dBm;
+
+            %% =========================================
+            % Debug
+            %% =========================================
             ctx = obj.writeDebugTrace(ctx, txPower, BWcell, load, interfScale);
 
             if obj.shouldPrint(ctx)
@@ -253,7 +259,6 @@ classdef RadioModel < handle
         function tf = shouldPrint(~, ctx)
 
             tf = false;
-
             if ~isfield(ctx.cfg,'debug'), return; end
             if ~ctx.cfg.debug.enable, return; end
 
@@ -280,17 +285,8 @@ classdef RadioModel < handle
 
             tr = ctx.tmp.debug.trace.radio;
 
-            fprintf('[DEBUG][slot=%d][radio] meanSINR=%.2f dB  min=%.2f  max=%.2f\n', ...
+            fprintf('[DEBUG][slot=%d][radio] meanSINR=%.2f dB min=%.2f max=%.2f\n', ...
                 tr.slot, tr.ue.meanSinr, tr.ue.minSinr, tr.ue.maxSinr);
-
-            for c=1:numel(tr.cell.txPower)
-                fprintf('  cell=%d tx=%.1f dBm bw=%.1f MHz load=%.2f interfScale=%.3f\n', ...
-                    c, ...
-                    tr.cell.txPower(c), ...
-                    tr.cell.bandwidth(c)/1e6, ...
-                    tr.cell.load(c), ...
-                    tr.cell.interfScale(c));
-            end
         end
     end
 end

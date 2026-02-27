@@ -1,12 +1,17 @@
 classdef KPIModel
-%KPIMODEL v4 (Clean architecture + debug-safe)
+% KPIMODEL v5.0 (Competition-aware version)
 %
-% Rules:
-%   - NEVER write ctx.state directly
-%   - ONLY write ctx.tmp.kpi
-%   - Episode accumulators come from ctx.acc*
-%   - Slot metrics come from ctx.tmp.*
-%   - RanContext.updateStateBus() publishes final state
+% 新增：
+%   - SINR分布统计
+%   - 干扰压力指数
+%   - 容量饱和指数
+%   - 小区负载不均衡
+%   - 系统拥塞指数
+%
+% 仍然：
+%   - 只写 ctx.tmp.kpi
+%   - Episode来自 ctx.acc*
+%   - Slot来自 ctx.tmp*
 
     properties
         avgPacketBitsForDropRatio = 12000
@@ -14,9 +19,6 @@ classdef KPIModel
     end
 
     methods
-
-        function obj = KPIModel()
-        end
 
         function ctx = step(obj, ctx)
 
@@ -27,36 +29,29 @@ classdef KPIModel
                 ctx.tmp.kpi = struct();
             end
 
-            %% =====================================================
+            %% ===============================================
             % 1) Time base
-            %% =====================================================
-            t_s = double(ctx.slot) * double(ctx.dt);
-            if t_s <= 0
-                t_s = eps;
-            end
+            %% ===============================================
+            t_s = max(double(ctx.slot) * double(ctx.dt), eps);
 
-            %% =====================================================
-            % 2) Throughput (Episode-level)
-            %% =====================================================
+            %% ===============================================
+            % 2) Throughput
+            %% ===============================================
             thrBitPerUE = ctx.accThroughputBitPerUE(:);
             thrBitTotal = sum(thrBitPerUE);
 
             thr_bps_total  = thrBitTotal / t_s;
             thr_Mbps_total = thr_bps_total / 1e6;
 
-            ctx.tmp.kpi.throughputBitPerUE   = thrBitPerUE;
-            ctx.tmp.kpi.throughput_bps_total = thr_bps_total;
             ctx.tmp.kpi.throughput_Mbps_total = thr_Mbps_total;
-
             ctx.tmp.kpi.jainFairness = localJain(thrBitPerUE);
 
-            %% =====================================================
-            % 3) Energy (Episode-level)
-            %% =====================================================
+            %% ===============================================
+            % 3) Energy
+            %% ===============================================
             eJPerCell = ctx.accEnergyJPerCell(:);
             eJ_total  = sum(eJPerCell);
 
-            ctx.tmp.kpi.energyJPerCell = eJPerCell;
             ctx.tmp.kpi.energy_J_total = eJ_total;
 
             if eJ_total > 0
@@ -65,104 +60,122 @@ classdef KPIModel
                 ctx.tmp.kpi.energy_eff_bit_per_J = 0;
             end
 
-            %% =====================================================
-            % 4) PRB utilization (Episode-level)
-            %% =====================================================
+            %% ===============================================
+            % 4) PRB Utilization
+            %% ===============================================
             prbUsed  = ctx.accPRBUsedPerCell(:);
             prbTotal = ctx.accPRBTotalPerCell(:);
 
-            prbTotalSafe = prbTotal;
-            prbTotalSafe(prbTotalSafe <= 0) = 1;
+            prbTotalSafe = max(prbTotal,1);
+            prbUtil = min(max(prbUsed ./ prbTotalSafe,0),1);
 
-            prbUtilPerCell = prbUsed ./ prbTotalSafe;
-            prbUtilPerCell = min(max(prbUtilPerCell,0),1);
+            ctx.tmp.kpi.prbUtilPerCell = prbUtil;
+            ctx.tmp.kpi.prbUtilMean    = mean(prbUtil);
 
-            ctx.tmp.kpi.prbUsedPerCell  = prbUsed;
-            ctx.tmp.kpi.prbTotalPerCell = prbTotal;
-            ctx.tmp.kpi.prbUtilPerCell  = prbUtilPerCell;
-            ctx.tmp.kpi.prbUtilMean     = mean(prbUtilPerCell);
+            % 小区不均衡
+            ctx.tmp.kpi.prbImbalance = std(prbUtil);
 
-            %% =====================================================
-            % 5) PHY quality (Slot-level instantaneous)
-            %% =====================================================
+            %% ===============================================
+            % 5) SINR 分布统计
+            %% ===============================================
             if numel(ctx.sinr_dB) == numUE
-                ctx.tmp.kpi.meanSINR_dB = mean(ctx.sinr_dB);
+
+                sinr = ctx.sinr_dB(:);
+
+                ctx.tmp.kpi.meanSINR_dB = mean(sinr);
+                ctx.tmp.kpi.p10SINR_dB  = prctile(sinr,10);
+                ctx.tmp.kpi.p50SINR_dB  = prctile(sinr,50);
+                ctx.tmp.kpi.p90SINR_dB  = prctile(sinr,90);
+
+                % SINR离散度
+                ctx.tmp.kpi.sinrStd = std(sinr);
+
             else
                 ctx.tmp.kpi.meanSINR_dB = 0;
+                ctx.tmp.kpi.p10SINR_dB  = 0;
+                ctx.tmp.kpi.p50SINR_dB  = 0;
+                ctx.tmp.kpi.p90SINR_dB  = 0;
+                ctx.tmp.kpi.sinrStd     = 0;
             end
 
-            if isfield(ctx.tmp,'lastMCSPerUE')
-                v = ctx.tmp.lastMCSPerUE(:);
-                if numel(v)==numUE
-                    ctx.tmp.kpi.meanMCS = mean(v);
-                else
-                    ctx.tmp.kpi.meanMCS = 0;
-                end
-            else
-                ctx.tmp.kpi.meanMCS = 0;
-            end
-
+            %% ===============================================
+            % 6) BLER / PHY质量
+            %% ===============================================
             if isfield(ctx.tmp,'lastBLERPerUE')
-                v = ctx.tmp.lastBLERPerUE(:);
-                if numel(v)==numUE
-                    ctx.tmp.kpi.meanBLER = mean(v);
-                else
-                    ctx.tmp.kpi.meanBLER = 0;
-                end
+                ctx.tmp.kpi.meanBLER = mean(ctx.tmp.lastBLERPerUE(:));
             else
                 ctx.tmp.kpi.meanBLER = 0;
             end
 
-            %% =====================================================
-            % 6) Drop statistics
-            %% =====================================================
+            %% ===============================================
+            % 7) Drop统计
+            %% ===============================================
             dropTotal = double(ctx.accDroppedTotal);
-            dropURLLC = double(ctx.accDroppedURLLC);
-
-            ctx.tmp.kpi.dropTotal = dropTotal;
-            ctx.tmp.kpi.dropURLLC = dropURLLC;
 
             deliveredPktsApprox = thrBitTotal / max(obj.avgPacketBitsForDropRatio,1);
-
             denom = dropTotal + deliveredPktsApprox;
-            if denom <= 0
-                dropRatio = 0;
-            else
+
+            if denom > 0
                 dropRatio = dropTotal / denom;
+            else
+                dropRatio = 0;
             end
 
             ctx.tmp.kpi.dropRatio = dropRatio;
 
-            %% =====================================================
-            % 7) Mobility events (Episode-level)
-            %% =====================================================
-            ctx.tmp.kpi.handoverCount  = ctx.accHOCount;
-            ctx.tmp.kpi.pingPongCount  = ctx.accPingPongCount;
-            ctx.tmp.kpi.rlfCount       = ctx.accRLFCount;
+            %% ===============================================
+            % 8) Mobility
+            %% ===============================================
+            ctx.tmp.kpi.handoverCount = ctx.accHOCount;
+            ctx.tmp.kpi.rlfCount      = ctx.accRLFCount;
 
-            %% =====================================================
-            % 8) Slot-level PRB usage (optional)
-            %% =====================================================
-            if isfield(ctx.tmp,'lastPRBUsedPerCell')
-                ctx.tmp.kpi.lastPrbUsedSlot = ctx.tmp.lastPRBUsedPerCell(:);
+            %% ===============================================
+            % 9) 新增：干扰压力指数
+            %% ===============================================
+            if isfield(ctx.tmp,'channel') && ...
+               isfield(ctx.tmp.channel,'interference_dBm')
+
+                interf = ctx.tmp.channel.interference_dBm;
+                interf = interf(isfinite(interf));
+
+                if ~isempty(interf)
+                    ctx.tmp.kpi.meanInterference_dBm = mean(interf);
+                    ctx.tmp.kpi.interfStd = std(interf);
+                else
+                    ctx.tmp.kpi.meanInterference_dBm = -inf;
+                    ctx.tmp.kpi.interfStd = 0;
+                end
             else
-                ctx.tmp.kpi.lastPrbUsedSlot = zeros(numCell,1);
+                ctx.tmp.kpi.meanInterference_dBm = -inf;
+                ctx.tmp.kpi.interfStd = 0;
             end
 
-            %% =====================================================
-            % 9) Debug
-            %% =====================================================
+            %% ===============================================
+            % 10) 系统拥塞指数
+            %% ===============================================
+            % 综合：高负载 + 高BLER + 低p10SINR
+            congestion = ...
+                0.4 * ctx.tmp.kpi.prbUtilMean + ...
+                0.3 * ctx.tmp.kpi.meanBLER + ...
+                0.3 * max(0, -ctx.tmp.kpi.p10SINR_dB / 10);
+
+            ctx.tmp.kpi.congestionIndex = congestion;
+
+            %% ===============================================
+            % 11) Debug
+            %% ===============================================
             if ctx.slot <= obj.debugFirstSlots
-                fprintf('[KPI] slot=%d Thr=%.2f Mbps, Energy=%.2f J, DropR=%.4f\n', ...
-                    ctx.slot, thr_Mbps_total, eJ_total, dropRatio);
+                fprintf('[KPI] slot=%d Thr=%.2f Mbps | SINR(p10)=%.2f | Cong=%.2f\n', ...
+                    ctx.slot, ...
+                    thr_Mbps_total, ...
+                    ctx.tmp.kpi.p10SINR_dB, ...
+                    congestion);
             end
         end
     end
 end
 
 
-%% =============================================================
-% Local helper
 %% =============================================================
 function j = localJain(x)
 x = double(x(:));

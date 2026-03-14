@@ -1,12 +1,26 @@
+%{
+Author: Chongyu Bao (zt25108@bristol.ac.uk)
+
+File: RadioModel.m
+Description: ORAN conflict-oriented radio model with strong coupling.
+Fixes the "TxOffset does not change SINR" issue by adding an absolute
+power-driven interference leakage term that does not cancel out under
+global Tx offsets.
+%}
+
 classdef RadioModel < handle
-% RADIOMODEL v9.0 (ORAN Conflict-Oriented Version)
+% RADIOMODEL v9.1 (ORAN Conflict-Oriented Version, TxOffset-SINR fixed)
 %
-% 目标：
-%   - Beam真正参与RSRP
-%   - Fast fading改为per-link
-%   - 引入PRB overlap干扰
-%   - 输出interference给KPI
-%   - 保持强耦合竞争结构
+% Fix(2):
+%   - TxOffset should affect SINR even when all cells shift together.
+%   - Add an absolute Tx-power driven leakage scale on interference.
+%   - Keep median-referenced relative coupling for per-cell competition.
+%
+% Also keeps:
+%   - Beam participates in RSRP
+%   - Fast fading per-link
+%   - PRB overlap interference
+%   - Outputs interference to KPI
 %
 
     properties
@@ -24,11 +38,16 @@ classdef RadioModel < handle
         interfMinLoad = 0.05
         loadSmoothFactor = 0.8
 
-        % Coupling
+        % Coupling (relative competition)
         kTxExp   = 0.35
         kBwExp   = 0.8
         kLoadExp = 1.5
         edgeBoost = 1.5
+
+        % Absolute leakage coupling (NEW)
+        absLeakEnable = true
+        absLeakAlpha  = 0.35          % strength vs avg Tx shift
+        absLeakRefTx_dBm = []         % baseline reference, auto init
 
         % SINR compression
         sinrCompressThreshold_dB = 25
@@ -55,6 +74,11 @@ classdef RadioModel < handle
             obj.shadowField  = obj.shadowingStd_dB * randn(numUE,numCell);
             obj.smoothedLoad = ones(numCell,1) * 0.5;
             obj.lastUEPos    = ctx.uePos;
+
+            % capture a stable reference for absolute leakage
+            if isempty(obj.absLeakRefTx_dBm)
+                obj.absLeakRefTx_dBm = mean(ctx.txPowerCell_dBm(:));
+            end
         end
 
         function ctx = step(obj, ctx)
@@ -69,7 +93,7 @@ classdef RadioModel < handle
             gNB = ctx.scenario.topology.gNBPos;
 
             %% =========================================
-            % 1️⃣ Shadow update
+            % 1) Shadow update
             %% =========================================
             deltaPos = vecnorm(ctx.uePos - obj.lastUEPos,2,2);
             obj.lastUEPos = ctx.uePos;
@@ -83,7 +107,7 @@ classdef RadioModel < handle
             end
 
             %% =========================================
-            % 2️⃣ Fast fading (PER-LINK 修复)
+            % 2) Fast fading per-link
             %% =========================================
             v = deltaPos / max(ctx.dt,1e-12);
             sigma = obj.fastFadeSigmaLow_dB * ones(numUE,1);
@@ -92,7 +116,7 @@ classdef RadioModel < handle
             fastFade = randn(numUE,numCell) .* sigma;
 
             %% =========================================
-            % 3️⃣ Load smoothing
+            % 3) Load smoothing
             %% =========================================
             prbTotal = ctx.numPRBPerCell(:);
             prbUsed  = ctx.lastPRBUsedPerCell_slot(:);
@@ -107,7 +131,7 @@ classdef RadioModel < handle
             load = obj.smoothedLoad;
 
             %% =========================================
-            % 4️⃣ RSRP计算（加入Beam）
+            % 4) RSRP (with Beam)
             %% =========================================
             txPower = min(max(ctx.txPowerCell_dBm(:),-50),80);
 
@@ -134,11 +158,11 @@ classdef RadioModel < handle
             ctx.rsrp_dBm = rsrp;
 
             %% =========================================
-            % 5️⃣ 干扰耦合
+            % 5) Interference coupling
             %% =========================================
-
             BWcell = max(ctx.bandwidthHzPerCell(:),1e3);
 
+            % relative (median-referenced) competition
             txRef = median(txPower);
             txPart = (10.^((txPower - txRef)/10)).^obj.kTxExp;
 
@@ -149,8 +173,18 @@ classdef RadioModel < handle
 
             interfScale = txPart .* bwPart .* loadPart;
 
+            % NEW: absolute leakage so global TxOffset changes SINR
+            absLeak = 1.0;
+            if obj.absLeakEnable
+                if isempty(obj.absLeakRefTx_dBm)
+                    obj.absLeakRefTx_dBm = mean(txPower);
+                end
+                dAvg = mean(txPower) - obj.absLeakRefTx_dBm;
+                absLeak = 10.^((obj.absLeakAlpha * dAvg)/10);
+            end
+
             %% =========================================
-            % 6️⃣ Noise
+            % 6) Noise
             %% =========================================
             kB = 1.38e-23;
             noiseW = kB * obj.temperature_K .* BWcell;
@@ -158,7 +192,7 @@ classdef RadioModel < handle
             noiseW = max(noiseW,1e-20);
 
             %% =========================================
-            % 7️⃣ SINR计算 + overlap
+            % 7) SINR + PRB overlap + absolute leakage
             %% =========================================
             sinr_dB = zeros(numUE,1);
             interf_dBm = zeros(numUE,1);
@@ -184,7 +218,7 @@ classdef RadioModel < handle
                     % PRB overlap
                     overlap = min(load(s), load(c));
 
-                    % 边缘UE增强
+                    % edge boost
                     if rsrp(u,s) < median(rsrp(u,:))
                         edgeFactor = obj.edgeBoost;
                     else
@@ -195,8 +229,10 @@ classdef RadioModel < handle
                         pW * interfScale(c) * overlap * edgeFactor;
                 end
 
-                sinrW = sigW / (interfW + noiseW(s) + 1e-15);
+                % apply absolute leakage scaling
+                interfW = interfW * absLeak;
 
+                sinrW = sigW / (interfW + noiseW(s) + 1e-15);
                 sinr = 10*log10(max(sinrW,1e-12));
 
                 if sinr > obj.sinrCompressThreshold_dB
@@ -206,14 +242,13 @@ classdef RadioModel < handle
                 end
 
                 sinr_dB(u) = sinr;
-
                 interf_dBm(u) = 10*log10(max(interfW,1e-15)) + 30;
             end
 
             ctx.sinr_dB = sinr_dB;
             ctx.tmp.meanSinr_dB = mean(sinr_dB);
 
-            % 👉 输出给KPI
+            % output interference to KPI
             if ~isfield(ctx.tmp,'channel')
                 ctx.tmp.channel = struct();
             end
@@ -222,7 +257,7 @@ classdef RadioModel < handle
             %% =========================================
             % Debug
             %% =========================================
-            ctx = obj.writeDebugTrace(ctx, txPower, BWcell, load, interfScale);
+            ctx = obj.writeDebugTrace(ctx, txPower, BWcell, load, interfScale, absLeak);
 
             if obj.shouldPrint(ctx)
                 obj.printDebug(ctx);
@@ -232,7 +267,7 @@ classdef RadioModel < handle
 
     methods (Access=private)
 
-        function ctx = writeDebugTrace(~, ctx, txPower, BWcell, load, interfScale)
+        function ctx = writeDebugTrace(~, ctx, txPower, BWcell, load, interfScale, absLeak)
 
             if ~isfield(ctx.tmp,'debug')
                 ctx.tmp.debug = struct();
@@ -248,6 +283,7 @@ classdef RadioModel < handle
             tr.cell.bandwidth = BWcell;
             tr.cell.load = load;
             tr.cell.interfScale = interfScale;
+            tr.cell.absLeak = absLeak;
 
             tr.ue.meanSinr = mean(ctx.sinr_dB);
             tr.ue.minSinr  = min(ctx.sinr_dB);
@@ -285,8 +321,8 @@ classdef RadioModel < handle
 
             tr = ctx.tmp.debug.trace.radio;
 
-            fprintf('[DEBUG][slot=%d][radio] meanSINR=%.2f dB min=%.2f max=%.2f\n', ...
-                tr.slot, tr.ue.meanSinr, tr.ue.minSinr, tr.ue.maxSinr);
+            fprintf('[DEBUG][slot=%d][radio] meanSINR=%.2f dB min=%.2f max=%.2f absLeak=%.3f\n', ...
+                tr.slot, tr.ue.meanSinr, tr.ue.minSinr, tr.ue.maxSinr, tr.cell.absLeak);
         end
     end
 end

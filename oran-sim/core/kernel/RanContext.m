@@ -1,4 +1,4 @@
-classdef RanContext
+classdef RanContext < handle
 % RANCONTEXT v5 (Unified ctrl architecture + stable state bus + debug-ready)
 %
 % Core principles:

@@ -34,6 +34,7 @@ classdef ActionApplierModel
                 ctx.ctrl = obj.ensureCtrlFields(ctx.ctrl, numCell, numUE);
             end
 
+
             %=====================================================
             % 1) Reset slot-only ctrl fields (avoid stale control)
             %=====================================================
@@ -73,10 +74,10 @@ classdef ActionApplierModel
             if numel(bs) ~= numCell
                 bs = ones(numCell,1);
             end
-            bs = min(max(bs,0),1);
-
+            bs = min(max(bs,0.05),5.0);
+            
             ctx.numPRBPerCell = max(1, round(ctx.numPRBPerCell .* bs));
-            ctx.bandwidthHzPerCell = max(1e3, ctx.bandwidthHzPerCell .* max(bs,1e-3));
+            ctx.bandwidthHzPerCell = max(1e3, ctx.bandwidthHzPerCell .* bs);
 
             ctx.numPRB      = max(1, round(mean(ctx.numPRBPerCell)));
             ctx.bandwidthHz = max(1e3, mean(ctx.bandwidthHzPerCell));
@@ -92,8 +93,18 @@ classdef ActionApplierModel
             if numel(off) ~= numCell
                 off = zeros(numCell,1);
             end
-            off = min(max(off,-10),10);
+            off = min(max(off,-40),40);
             ctx.txPowerCell_dBm = ctx.txPowerCell_dBm + off;
+
+            % ======== PATCH DEBUG: action propagation check ========
+            %if hasAction
+            %    fprintf('[PATCH][slot=%d] action->ctrl->runtime\n', ctx.slot);
+            %    fprintf('  action.txOff=%s\n', mat2str(action.radio.txPowerOffset_dB(:).'));
+            %    fprintf('  ctrl.txOff  =%s\n', mat2str(ctx.ctrl.txPowerOffset_dB(:).'));
+            %    fprintf('  runtime.txP =%s\n', mat2str(ctx.txPowerCell_dBm(:).'));
+            %    fprintf('  ctrl.bwScale=%s\n', mat2str(ctx.ctrl.bandwidthScale(:).'));
+            %    fprintf('  runtime.PR B=%s\n', mat2str(ctx.numPRBPerCell(:).'));
+            %end
 
             %=====================================================
             % 6) Apply SLEEP ctrl: coverage penalty via Tx power reduction
@@ -192,7 +203,17 @@ classdef ActionApplierModel
             if isfield(action,'radio') && isfield(action.radio,'bandwidthScale')
                 bs = action.radio.bandwidthScale;
                 if isnumeric(bs) && numel(bs) == numCell
-                    ctrl.bandwidthScale = min(max(bs(:),0),1);
+                    bs = bs(:);
+                    bs = min(max(bs,0.05),5.0);
+                    ctrl.bandwidthScale = bs;
+                end
+            end
+
+            % radio.txPowerOffset_dB (NEW)
+            if isfield(action,'radio') && isfield(action.radio,'txPowerOffset_dB')
+                off = action.radio.txPowerOffset_dB;
+                if isnumeric(off) && numel(off) == numCell
+                    ctrl.txPowerOffset_dB = min(max(off(:),-40),40);
                 end
             end
 
@@ -200,7 +221,7 @@ classdef ActionApplierModel
             if isfield(action,'power') && isfield(action.power,'cellTxPowerOffset_dB')
                 off = action.power.cellTxPowerOffset_dB;
                 if isnumeric(off) && numel(off) == numCell
-                    ctrl.txPowerOffset_dB = min(max(off(:),-10),10);
+                    ctrl.txPowerOffset_dB = min(max(off(:),-40),40);
                 end
             end
 

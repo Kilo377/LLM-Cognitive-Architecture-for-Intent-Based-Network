@@ -61,7 +61,7 @@ classdef RanKernelNR
             obj.radioModel     = RadioModel();         % should read ctx.ctrl not ctx.action
             obj.hoModel        = HandoverModel();      % should read ctx.ctrl not ctx.action
             obj.schedulerModel = SchedulerPRBModel();  % reads ctx.ctrl
-            obj.phyModel       = PhyServiceModel(cfg, scenario);
+            obj.phyModel       = UnifiedPhyModel(cfg, scenario);
             obj.energyModel    = EnergyModelBS();      % reads ctx.ctrl only
             obj.kpiModel       = KPIModel();
 
@@ -89,6 +89,7 @@ classdef RanKernelNR
             % 0) Advance slot (clears tmp)
             % --------------------------------------------------
             obj.ctx = obj.ctx.nextSlot();
+
 
             % --------------------------------------------------
             % 0.1) Apply action FIRST (build ctx.ctrl + reset knobs)
@@ -210,6 +211,7 @@ classdef RanKernelNR
                 obj.printChainSnapshot("After updateStateBus", obj.ctx);
                 obj.printFooter();
             end
+
         end
 
         %% ===============================

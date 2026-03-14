@@ -7,7 +7,6 @@ classdef XAppManager < handle
     methods
 
         function obj = XAppManager(xapp_list)
-            % xapp_list: struct array
             obj.xapps = xapp_list;
         end
 
@@ -20,8 +19,9 @@ classdef XAppManager < handle
             end
         end
 
-        function actions = run(obj, input, trigger_type)
-            % trigger_type: 'periodic' | 'event'
+        function actions = run(obj, input, ~)
+            % 所有 status="on" 的 xApp 都运行
+            % trigger_type 参数保留但不使用
 
             actions = {};
 
@@ -33,15 +33,48 @@ classdef XAppManager < handle
                     continue;
                 end
 
-                if ~strcmp(xapp.execution_type, trigger_type)
-                    continue;
-                end
-
                 % 加载路径
                 addpath(xapp.path);
 
                 % 调用 xApp
                 action = feval(xapp.entry_point, input);
+
+                % ===== Debug dump =====
+                if isfield(input,"context") && isfield(input.context,"time")
+                    slot = input.context.time.slot;
+                else
+                    slot = -1;
+                end
+                
+                if slot <= 3
+                    fprintf("\n=== xApp return dump (slot=%d) id=%s ===\n", ...
+                        slot, xapp.xapp_id);
+
+                    disp(fieldnames(action));
+
+                    if isfield(action,"radio")
+                        fprintf("radio fields:\n");
+                        disp(fieldnames(action.radio));
+                        if isfield(action.radio,"bandwidthScale")
+                            fprintf("  bwMean=%.2f\n", ...
+                                mean(action.radio.bandwidthScale));
+                        end
+                        if isfield(action.radio,"txPowerOffset_dB")
+                            fprintf("  txOffMean=%.2f\n", ...
+                                mean(action.radio.txPowerOffset_dB));
+                        end
+                    end
+
+                    if isfield(action,"energy")
+                        fprintf("energy fields:\n");
+                        disp(fieldnames(action.energy));
+                        if isfield(action.energy,"basePowerScale")
+                            fprintf("  basePwrMean=%.2f\n", ...
+                                mean(action.energy.basePowerScale));
+                        end
+                    end
+                end
+                % ======================
 
                 actions{end+1} = action; %#ok<AGROW>
             end

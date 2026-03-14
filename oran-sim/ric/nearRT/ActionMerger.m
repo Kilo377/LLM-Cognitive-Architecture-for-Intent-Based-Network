@@ -1,24 +1,21 @@
 function final_action = ActionMerger(actions)
-%ACTIONMERGER Merge multiple xApp actions into a single action (Stable)
+% ACTIONMERGER v2
 %
-% 支持两类 xApp 输出：
-% 1) legacy: action.control.{key}
-% 2) new:    action.{domain}.{field}   e.g. action.scheduling.selectedUE
-%
-% 合并规则：
-% - domain 内字段覆盖：后来的 xApp 覆盖前面的
-% - control 映射到 scheduling 的兼容逻辑在 NearRTRIC 做
+% mergeMode options:
+%   "overwrite" (default)
+%   "average"
+%   "random"
+
+    mergeMode = "random";   % 🔥 在这里改策略 random average
 
     final_action = struct();
 
-    % standard domains (aligned with RanActionBus)
     final_action.scheduling = struct();
     final_action.power      = struct();
     final_action.sleep      = struct();
     final_action.handover   = struct();
     final_action.beam       = struct();
 
-    % legacy domain
     final_action.control    = struct();
 
     final_action.metadata = struct();
@@ -28,46 +25,80 @@ function final_action = ActionMerger(actions)
         return;
     end
 
+    % 遍历所有 domain
+    domains = ["scheduling","radio","energy","power","sleep","handover","beam"];
+
+    for d = domains
+        final_action.(d) = mergeDomainWithMode(actions, d, mergeMode);
+    end
+
+end
+
+% ==============================================================
+function mergedDomain = mergeDomainWithMode(actions, domain, mergeMode)
+
+    mergedDomain = struct();
+
+    fieldMap = containers.Map();
+
+    % 收集所有字段
     for i = 1:numel(actions)
 
         a = actions{i};
-        if isempty(a) || ~isstruct(a)
+        if ~isfield(a, domain)
             continue;
         end
 
-        % ---------- record source ----------
-        src = "";
-        if isfield(a,"metadata") && isstruct(a.metadata) && isfield(a.metadata,"xapp")
-            src = string(a.metadata.xapp);
-        else
-            src = "xapp_" + string(i);
-        end
-        final_action.metadata.sources{end+1} = char(src); %#ok<AGROW>
-
-        % ---------- merge legacy control ----------
-        if isfield(a,"control") && isstruct(a.control)
-            fn = fieldnames(a.control);
-            for k = 1:numel(fn)
-                key = fn{k};
-                final_action.control.(key) = a.control.(key);
-            end
-        end
-
-        % ---------- merge new domains ----------
-        final_action = mergeDomain(final_action, a, "scheduling");
-        final_action = mergeDomain(final_action, a, "power");
-        final_action = mergeDomain(final_action, a, "sleep");
-        final_action = mergeDomain(final_action, a, "handover");
-        final_action = mergeDomain(final_action, a, "beam");
-    end
-end
-
-function out = mergeDomain(out, a, domain)
-    if isfield(a, domain) && isstruct(a.(domain))
         fn = fieldnames(a.(domain));
+
         for k = 1:numel(fn)
+
             key = fn{k};
-            out.(domain).(key) = a.(domain).(key);
+
+            if ~isKey(fieldMap, key)
+                fieldMap(key) = {};
+            end
+
+            tmp = fieldMap(key);
+            tmp{end+1} = a.(domain).(key);
+            fieldMap(key) = tmp;
+
+        end
+    end
+
+    % 逐字段合并
+    keys = fieldMap.keys;
+
+    for i = 1:numel(keys)
+
+        key = keys{i};
+        values = fieldMap(key);
+
+        if numel(values) == 1
+            mergedDomain.(key) = values{1};
+            continue;
+        end
+
+        switch mergeMode
+
+            case "overwrite"
+                mergedDomain.(key) = values{end};
+
+            case "average"
+                if isnumeric(values{1})
+                    acc = 0;
+                    for j = 1:numel(values)
+                        acc = acc + values{j};
+                    end
+                    mergedDomain.(key) = acc / numel(values);
+                else
+                    mergedDomain.(key) = values{end};
+                end
+
+            case "random"
+                idx = randi(numel(values));
+                mergedDomain.(key) = values{idx};
+
         end
     end
 end

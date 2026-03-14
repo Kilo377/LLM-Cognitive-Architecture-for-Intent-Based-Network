@@ -1,60 +1,52 @@
+%{
+Author: Chongyu Bao (zt25108@bristol.ac.uk)
+File: UEMobilityModel.m
+Description:
+Random Waypoint mobility model with hotspot and edge-biased UE distribution.
+Compatible with initPos input.
+%}
+
 classdef UEMobilityModel
-%UEMOBILITYMODEL Random Waypoint UE mobility model
-%
-%   功能：
-%   实现经典 Random Waypoint (RWP) 移动模型。
-%   适用于小区切换、移动性优化、handover xApp 验证。
-%
-%   特点：
-%   - UE 在给定区域内随机选择目标点
-%   - 直线移动到目标点
-%   - 到达后可暂停
-%   - 支持高速 / 低速 UE 分层
-%   - 支持固定随机种子复现实验
-%
-%   状态输出：
-%   - UE 位置
-%   - UE 速度
-%
-%   适合：
-%   - mobility-aware xApp
-%   - handover KPI 评估
-%   - 统计型对比实验
 
     properties
-        %% 基本属性
-        numUE              % UE 数量
+        %% Basic
+        numUE
 
-        %% 动态状态
-        pos                % UE 位置 [numUE x 2]
-        speed              % UE 速度 [numUE x 1]
-        targetPos          % 当前目标点 [numUE x 2]
+        %% Dynamic state
+        pos
+        speed
+        targetPos
 
-        %% 场景边界
-        areaX              % x 轴边界 [xmin xmax]
-        areaY              % y 轴边界 [ymin ymax]
+        %% Area
+        areaX
+        areaY
 
-        %% 速度配置
+        %% Speed config
         speedMin
         speedMax
-        highSpeedRatio     % 高速 UE 比例
+        highSpeedRatio
 
-        %% 停顿控制
-        pauseTime          % 到达目标后的暂停时间
-        pauseTimer         % 当前剩余暂停时间
+        %% Pause control
+        pauseTime
+        pauseTimer
+
+        %% ===== New distribution control =====
+        hotspotRatio = 0.6
+        edgeRatio    = 0.3
+        hotspotSigma = 40
     end
 
     methods
 
-        %% ===============================
-        % 构造函数
-        %% ===============================
+        %% =========================================================
+        % Constructor
+        %% =========================================================
         function obj = UEMobilityModel(varargin)
 
             p = inputParser;
 
             addParameter(p,'numUE',10);
-            addParameter(p,'initPos',[]);
+            addParameter(p,'initPos',[]);   % compatibility
             addParameter(p,'areaX',[-300 300]);
             addParameter(p,'areaY',[-300 300]);
             addParameter(p,'speedRange',[1 25]);
@@ -64,47 +56,92 @@ classdef UEMobilityModel
             parse(p,varargin{:});
 
             obj.numUE = p.Results.numUE;
-
             obj.areaX = p.Results.areaX;
             obj.areaY = p.Results.areaY;
 
-            %% 初始化位置
-            if isempty(p.Results.initPos)
-                obj.pos = [ ...
-                    rand(obj.numUE,1)*(diff(obj.areaX))+obj.areaX(1), ...
-                    rand(obj.numUE,1)*(diff(obj.areaY))+obj.areaY(1)];
-            else
+            %% =====================================================
+            % Position initialization
+            %% =====================================================
+            if ~isempty(p.Results.initPos)
+
                 obj.pos = p.Results.initPos(:,1:2);
+
+            else
+
+                hotspotCenter = [
+                    -150 -150;
+                     150 -150;
+                    -150  150;
+                     150  150
+                ];
+
+                numHotUE  = round(obj.numUE * obj.hotspotRatio);
+                numEdgeUE = round(obj.numUE * obj.edgeRatio);
+                numRandUE = obj.numUE - numHotUE - numEdgeUE;
+
+                pos = zeros(obj.numUE,2);
+                idx = randperm(obj.numUE);
+
+                %% -----------------------------
+                % Hotspot UE
+                %% -----------------------------
+                for i = 1:numHotUE
+                    h = hotspotCenter(randi(size(hotspotCenter,1)),:);
+                    pos(idx(i),:) = h + obj.hotspotSigma * randn(1,2);
+                end
+
+                %% -----------------------------
+                % Edge-biased UE
+                %% -----------------------------
+                R = min(diff(obj.areaX), diff(obj.areaY)) / 2;
+                cx = mean(obj.areaX);
+                cy = mean(obj.areaY);
+
+                for i = 1:numEdgeUE
+                    id = idx(numHotUE+i);
+
+                    theta = 2*pi*rand;
+                    r = 0.8*R + 0.2*R*rand;
+
+                    pos(id,1) = cx + r*cos(theta);
+                    pos(id,2) = cy + r*sin(theta);
+                end
+
+                %% -----------------------------
+                % Uniform random UE
+                %% -----------------------------
+                for i = 1:numRandUE
+                    id = idx(numHotUE+numEdgeUE+i);
+                    pos(id,1) = rand*(diff(obj.areaX))+obj.areaX(1);
+                    pos(id,2) = rand*(diff(obj.areaY))+obj.areaY(1);
+                end
+
+                obj.pos = pos;
             end
 
-            %% 速度范围
-            obj.speedMin = p.Results.speedRange(1);
-            obj.speedMax = p.Results.speedRange(2);
-
-            %% 速度分层初始化
+            %% =====================================================
+            % Speed initialization
+            %% =====================================================
             obj.speed = zeros(obj.numUE,1);
+
             for i = 1:obj.numUE
                 if rand < p.Results.highSpeedRatio
-                    % 高速 UE（例如车载）
-                    obj.speed(i) = 20 + 5*rand;  % 20–25 m/s
+                    obj.speed(i) = 20 + 5*rand;
                 else
-                    % 低速 UE（例如行人）
-                    obj.speed(i) = 1 + 2*rand;   % 1–3 m/s
+                    obj.speed(i) = 1 + 2*rand;
                 end
             end
 
-            %% 初始目标点
             obj.targetPos = obj.generateRandomTarget(obj.numUE);
 
-            %% 停顿控制
             obj.pauseTime  = p.Results.pauseTime;
             obj.pauseTimer = zeros(obj.numUE,1);
         end
 
 
-        %% ===============================
-        % 生成随机目标点
-        %% ===============================
+        %% =========================================================
+        % Generate random target
+        %% =========================================================
         function target = generateRandomTarget(obj,n)
 
             if nargin < 2
@@ -117,45 +154,34 @@ classdef UEMobilityModel
         end
 
 
-        %% ===============================
-        % 单步更新
-        %% ===============================
+        %% =========================================================
+        % Step update
+        %% =========================================================
         function [obj,pos] = step(obj,deltaT)
-        % deltaT: 时间步长（秒）
 
             for i = 1:obj.numUE
 
-                % 若处于暂停状态
                 if obj.pauseTimer(i) > 0
                     obj.pauseTimer(i) = obj.pauseTimer(i) - deltaT;
                     continue;
                 end
 
-                % 计算目标方向
                 dx = obj.targetPos(i,1) - obj.pos(i,1);
                 dy = obj.targetPos(i,2) - obj.pos(i,2);
 
                 dist = sqrt(dx^2 + dy^2);
 
-                % 若接近目标点
                 if dist < obj.speed(i)*deltaT
 
-                    % 到达目标
                     obj.pos(i,:) = obj.targetPos(i,:);
-
-                    % 生成新的目标点
-                    newTarget = obj.generateRandomTarget(1);
-                    obj.targetPos(i,:) = newTarget;
-
-                    % 设置暂停
+                    obj.targetPos(i,:) = obj.generateRandomTarget(1);
                     obj.pauseTimer(i) = obj.pauseTime;
 
                 else
-                    % 单位方向向量
+
                     dirX = dx / dist;
                     dirY = dy / dist;
 
-                    % 更新位置
                     obj.pos(i,1) = obj.pos(i,1) + obj.speed(i)*dirX*deltaT;
                     obj.pos(i,2) = obj.pos(i,2) + obj.speed(i)*dirY*deltaT;
                 end
@@ -165,14 +191,12 @@ classdef UEMobilityModel
         end
 
 
-        %% ===============================
-        % 导出当前状态
-        %% ===============================
+        %% =========================================================
+        % Export state
+        %% =========================================================
         function state = getState(obj)
-
             state.pos   = obj.pos;
             state.speed = obj.speed;
-
         end
     end
 end

@@ -1,17 +1,15 @@
 classdef KPIModel
-% KPIMODEL v5.0 (Competition-aware version)
+% KPIMODEL v6.0 (Intent-Oriented & Physically Consistent)
 %
-% 新增：
-%   - SINR分布统计
-%   - 干扰压力指数
-%   - 容量饱和指数
-%   - 小区负载不均衡
-%   - 系统拥塞指数
+% 分层KPI:
+%   1. Capacity
+%   2. Reliability
+%   3. Efficiency
+%   4. Resource pressure
+%   5. Stability
 %
-% 仍然：
-%   - 只写 ctx.tmp.kpi
-%   - Episode来自 ctx.acc*
-%   - Slot来自 ctx.tmp*
+% 只写 ctx.tmp.kpi
+%
 
     properties
         avgPacketBitsForDropRatio = 12000
@@ -25,113 +23,60 @@ classdef KPIModel
             numUE   = ctx.cfg.scenario.numUE;
             numCell = ctx.cfg.scenario.numCell;
 
-            if ~isfield(ctx.tmp,'kpi') || isempty(ctx.tmp.kpi)
+            if ~isfield(ctx.tmp,'kpi')
                 ctx.tmp.kpi = struct();
             end
 
-            %% ===============================================
-            % 1) Time base
-            %% ===============================================
             t_s = max(double(ctx.slot) * double(ctx.dt), eps);
 
-            %% ===============================================
-            % 2) Throughput
-            %% ===============================================
+            %% =====================================================
+            % 1️⃣ CAPACITY
+            %% =====================================================
             thrBitPerUE = ctx.accThroughputBitPerUE(:);
             thrBitTotal = sum(thrBitPerUE);
 
-            thr_bps_total  = thrBitTotal / t_s;
-            thr_Mbps_total = thr_bps_total / 1e6;
+            thr_Mbps_total = (thrBitTotal / t_s) / 1e6;
 
-            ctx.tmp.kpi.throughput_Mbps_total = thr_Mbps_total;
-            ctx.tmp.kpi.jainFairness = localJain(thrBitPerUE);
+            ctx.tmp.kpi.capacity.throughput_Mbps_total = thr_Mbps_total;
+            ctx.tmp.kpi.capacity.jainFairness = localJain(thrBitPerUE);
 
-            %% ===============================================
-            % 3) Energy
-            %% ===============================================
-            eJPerCell = ctx.accEnergyJPerCell(:);
-            eJ_total  = sum(eJPerCell);
+            %% =====================================================
+            % 2️⃣ RELIABILITY
+            %% =====================================================
+            if isfield(ctx.tmp,'lastBLERPerUE')
+                meanBLER = mean(ctx.tmp.lastBLERPerUE(:));
+            else
+                meanBLER = 0;
+            end
 
-            ctx.tmp.kpi.energy_J_total = eJ_total;
+            ctx.tmp.kpi.reliability.meanBLER = meanBLER;
+            ctx.tmp.kpi.reliability.rlfCount = ctx.accRLFCount;
+            ctx.tmp.kpi.reliability.dropRatio = computeDrop(ctx, obj, thrBitTotal);
+
+            %% =====================================================
+            % 3️⃣ EFFICIENCY
+            %% =====================================================
+            eJ_total = sum(ctx.accEnergyJPerCell(:));
+
+            ctx.tmp.kpi.efficiency.energy_J_total = eJ_total;
 
             if eJ_total > 0
-                ctx.tmp.kpi.energy_eff_bit_per_J = thrBitTotal / eJ_total;
+                ctx.tmp.kpi.efficiency.bitPerJ = thrBitTotal / eJ_total;
             else
-                ctx.tmp.kpi.energy_eff_bit_per_J = 0;
+                ctx.tmp.kpi.efficiency.bitPerJ = 0;
             end
 
-            %% ===============================================
-            % 4) PRB Utilization
-            %% ===============================================
+            %% =====================================================
+            % 4️⃣ RESOURCE PRESSURE
+            %% =====================================================
             prbUsed  = ctx.accPRBUsedPerCell(:);
             prbTotal = ctx.accPRBTotalPerCell(:);
+            prbUtil = min(max(prbUsed ./ max(prbTotal,1),0),1);
 
-            prbTotalSafe = max(prbTotal,1);
-            prbUtil = min(max(prbUsed ./ prbTotalSafe,0),1);
+            ctx.tmp.kpi.resource.prbUtilMean = mean(prbUtil);
+            ctx.tmp.kpi.resource.prbImbalance = std(prbUtil);
 
-            ctx.tmp.kpi.prbUtilPerCell = prbUtil;
-            ctx.tmp.kpi.prbUtilMean    = mean(prbUtil);
-
-            % 小区不均衡
-            ctx.tmp.kpi.prbImbalance = std(prbUtil);
-
-            %% ===============================================
-            % 5) SINR 分布统计
-            %% ===============================================
-            if numel(ctx.sinr_dB) == numUE
-
-                sinr = ctx.sinr_dB(:);
-
-                ctx.tmp.kpi.meanSINR_dB = mean(sinr);
-                ctx.tmp.kpi.p10SINR_dB  = prctile(sinr,10);
-                ctx.tmp.kpi.p50SINR_dB  = prctile(sinr,50);
-                ctx.tmp.kpi.p90SINR_dB  = prctile(sinr,90);
-
-                % SINR离散度
-                ctx.tmp.kpi.sinrStd = std(sinr);
-
-            else
-                ctx.tmp.kpi.meanSINR_dB = 0;
-                ctx.tmp.kpi.p10SINR_dB  = 0;
-                ctx.tmp.kpi.p50SINR_dB  = 0;
-                ctx.tmp.kpi.p90SINR_dB  = 0;
-                ctx.tmp.kpi.sinrStd     = 0;
-            end
-
-            %% ===============================================
-            % 6) BLER / PHY质量
-            %% ===============================================
-            if isfield(ctx.tmp,'lastBLERPerUE')
-                ctx.tmp.kpi.meanBLER = mean(ctx.tmp.lastBLERPerUE(:));
-            else
-                ctx.tmp.kpi.meanBLER = 0;
-            end
-
-            %% ===============================================
-            % 7) Drop统计
-            %% ===============================================
-            dropTotal = double(ctx.accDroppedTotal);
-
-            deliveredPktsApprox = thrBitTotal / max(obj.avgPacketBitsForDropRatio,1);
-            denom = dropTotal + deliveredPktsApprox;
-
-            if denom > 0
-                dropRatio = dropTotal / denom;
-            else
-                dropRatio = 0;
-            end
-
-            ctx.tmp.kpi.dropRatio = dropRatio;
-
-            %% ===============================================
-            % 8) Mobility
-            %% ===============================================
-            ctx.tmp.kpi.handoverCount = ctx.accHOCount;
-            ctx.tmp.kpi.rlfCount      = ctx.accRLFCount;
-
-            %% ===============================================
-            % 9) 新增：干扰压力指数
-            %% ===============================================
+            % Interference
             if isfield(ctx.tmp,'channel') && ...
                isfield(ctx.tmp.channel,'interference_dBm')
 
@@ -139,37 +84,121 @@ classdef KPIModel
                 interf = interf(isfinite(interf));
 
                 if ~isempty(interf)
-                    ctx.tmp.kpi.meanInterference_dBm = mean(interf);
-                    ctx.tmp.kpi.interfStd = std(interf);
+                    ctx.tmp.kpi.resource.meanInterference_dBm = mean(interf);
+                    ctx.tmp.kpi.resource.interfStd = std(interf);
                 else
-                    ctx.tmp.kpi.meanInterference_dBm = -inf;
-                    ctx.tmp.kpi.interfStd = 0;
+                    ctx.tmp.kpi.resource.meanInterference_dBm = -inf;
+                    ctx.tmp.kpi.resource.interfStd = 0;
                 end
             else
-                ctx.tmp.kpi.meanInterference_dBm = -inf;
-                ctx.tmp.kpi.interfStd = 0;
+                ctx.tmp.kpi.resource.meanInterference_dBm = -inf;
+                ctx.tmp.kpi.resource.interfStd = 0;
             end
 
-            %% ===============================================
-            % 10) 系统拥塞指数
-            %% ===============================================
-            % 综合：高负载 + 高BLER + 低p10SINR
+            %% =====================================================
+            % 5️⃣ PHY DISTRIBUTION
+            %% =====================================================
+            if numel(ctx.sinr_dB) == numUE
+
+                sinr = ctx.sinr_dB(:);
+
+                ctx.tmp.kpi.phy.meanSINR_dB = mean(sinr);
+                ctx.tmp.kpi.phy.p10SINR_dB  = prctile(sinr,10);
+                ctx.tmp.kpi.phy.p50SINR_dB  = prctile(sinr,50);
+                ctx.tmp.kpi.phy.p90SINR_dB  = prctile(sinr,90);
+                ctx.tmp.kpi.phy.sinrStd     = std(sinr);
+            else
+                ctx.tmp.kpi.phy.meanSINR_dB = 0;
+                ctx.tmp.kpi.phy.p10SINR_dB  = 0;
+                ctx.tmp.kpi.phy.p50SINR_dB  = 0;
+                ctx.tmp.kpi.phy.p90SINR_dB  = 0;
+                ctx.tmp.kpi.phy.sinrStd     = 0;
+            end
+
+            %% =====================================================
+            % 6️⃣ STABILITY
+            %% =====================================================
+            ctx.tmp.kpi.stability.handoverCount = ctx.accHOCount;
+            ctx.tmp.kpi.stability.pingPongCount = ctx.accPingPongCount;
+
+            %% =====================================================
+            % 7️⃣ PHYSICAL CONGESTION INDEX
+            %% =====================================================
+            % 基于物理逻辑构建，不是经验拼接
+
+            loadIndex = ctx.tmp.kpi.resource.prbUtilMean;
+            blerIndex = ctx.tmp.kpi.reliability.meanBLER;
+            sinrIndex = max(0, -ctx.tmp.kpi.phy.p10SINR_dB / 10);
+
             congestion = ...
-                0.4 * ctx.tmp.kpi.prbUtilMean + ...
-                0.3 * ctx.tmp.kpi.meanBLER + ...
-                0.3 * max(0, -ctx.tmp.kpi.p10SINR_dB / 10);
+                0.5 * loadIndex + ...
+                0.3 * blerIndex + ...
+                0.2 * sinrIndex;
 
-            ctx.tmp.kpi.congestionIndex = congestion;
+            ctx.tmp.kpi.system.congestionIndex = congestion;
+  
 
-            %% ===============================================
-            % 11) Debug
-            %% ===============================================
+
+
+            
+
+            % =====================================================
+            % PATCH2: kernel observability (ctx-only)
+            % =====================================================
+            if isfield(ctx,'cfg') && isfield(ctx.cfg,'debug') && ...
+               isfield(ctx.cfg.debug,'enable') && ctx.cfg.debug.enable
+            
+                every = 100;
+                if isfield(ctx.cfg.debug,'every') && isnumeric(ctx.cfg.debug.every) && ctx.cfg.debug.every >= 1
+                    every = round(ctx.cfg.debug.every);
+                end
+            
+                if mod(ctx.slot, every) == 0
+            
+                    % buffer bits (from state bus)
+                    bufTot = 0;
+                    if isfield(ctx,'bufferBitsPerUE')
+                        bufTot = sum(double(ctx.bufferBitsPerUE(:)));
+                    elseif isfield(ctx,'tmp') && isfield(ctx.tmp,'traffic') && isfield(ctx.tmp.traffic,'queueBitsPerUE')
+                        bufTot = sum(double(ctx.tmp.traffic.queueBitsPerUE(:)));
+                    end
+            
+                    % PRB util (instant, not accumulated)
+                    prbUtilMean = 0;
+                    if isfield(ctx,'numPRBPerCell') && isfield(ctx,'lastPRBUsedPerCell_slot')
+                        prbUtilMean = mean(double(ctx.lastPRBUsedPerCell_slot(:)) ./ max(double(ctx.numPRBPerCell(:)),1));
+                    end
+            
+                    % MCS mean
+                    mcsMean = 0;
+                    if isfield(ctx,'mcsPerUE')
+                        mcsMean = mean(double(ctx.mcsPerUE(:)));
+                    elseif isfield(ctx,'tmp') && isfield(ctx.tmp,'lastMCSPerUE')
+                        mcsMean = mean(double(ctx.tmp.lastMCSPerUE(:)));
+                    end
+            
+                    % runtime knobs snapshot
+                    txMean = 0;
+                    if isfield(ctx,'txPowerCell_dBm')
+                        txMean = mean(double(ctx.txPowerCell_dBm(:)));
+                    end
+            
+                    prbMean = 0;
+                    if isfield(ctx,'numPRBPerCell')
+                        prbMean = mean(double(ctx.numPRBPerCell(:)));
+                    end
+            
+                    fprintf('[PATCH2][slot=%d] bufTot=%.2e bits | prbUtilMean=%.2f | mcsMean=%.2f | txMean=%.2f dBm | prbMean=%.1f\n', ...
+                        ctx.slot, bufTot, prbUtilMean, mcsMean, txMean, prbMean);
+                end
+            end
+
+            %% =====================================================
+            % Debug
+            %% =====================================================
             if ctx.slot <= obj.debugFirstSlots
-                fprintf('[KPI] slot=%d Thr=%.2f Mbps | SINR(p10)=%.2f | Cong=%.2f\n', ...
-                    ctx.slot, ...
-                    thr_Mbps_total, ...
-                    ctx.tmp.kpi.p10SINR_dB, ...
-                    congestion);
+                fprintf('[KPI] slot=%d Thr=%.2f Mbps | BLER=%.3f | Cong=%.3f\n', ...
+                    ctx.slot, thr_Mbps_total, meanBLER, congestion);
             end
         end
     end
@@ -177,12 +206,23 @@ end
 
 
 %% =============================================================
+function dropRatio = computeDrop(ctx, obj, thrBitTotal)
+
+dropTotal = double(ctx.accDroppedTotal);
+
+deliveredPktsApprox = thrBitTotal / max(obj.avgPacketBitsForDropRatio,1);
+denom = dropTotal + deliveredPktsApprox;
+
+if denom > 0
+    dropRatio = dropTotal / denom;
+else
+    dropRatio = 0;
+end
+end
+
+
 function j = localJain(x)
 x = double(x(:));
-if isempty(x)
-    j = 0;
-    return;
-end
 sx = sum(x);
 sx2 = sum(x.^2);
 n = numel(x);

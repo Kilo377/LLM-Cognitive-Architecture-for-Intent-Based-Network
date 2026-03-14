@@ -982,3 +982,75 @@ action 仍然在其他模型被读取, 导致两者可能不同步
 而baseline的调度机制效果则欠缺. 所以这样可以明显的体现xApp的效果,
 更可以很好的体现出conflict导致的效果, 所以再修完网络层最后一次错误后,
 就接下来需要根据开发xApp, 以及效果对比来进一步调整网络了
+
+## 20260220
+```
+1. 现在框架是否支持频谱影响和MAC调度
+2. beamforming应该是跨小区的, UE这里也可以加入天线
+3. 对小基站的建模可以提升
+4. 降低丢包率
+5. Qos
+```
+## 20260227
+再对网络做一层更新, 这时候要写好注释等规范, 增设debug label
+并且对模型进行进一步的改进, 
+接下来就必须开始先想好参数面, 
+所以: 列一下控制的网络参数表, 
+照着表和KPI来设计xApp
+并且正好构建一下图
+
+1. 我们需要"资源紧张网络", 每个仿真的一些接口可以拿出来配置
+2. 改注释
+3. 提升模型能力
+
+
+综合当前Core仿真, 最需要改进的两个模型分别是:
+
+RadioModel, BeamformingModel 目前不影响 SINR。干扰模型仍然是"经验型缩放", 3️⃣ 干扰没输出给 KPI, 4️⃣ fast fading 是 per-UE 而非 per-cell
+
+PhyServiceModel / NrPhyMacAdapter（二选一统一）
+
+已经将Beamforming的增益加入进了NR, 并把PhyAdapter合成了Unify
+
+
+## 20260228
+这一阶段优先开发xApp, 
+明确一下:
+
+我们要做xApp的选择分为两层: 
+
+1. 我们选择xApp集合去实现intent 
+2. xApp的并行部署它可能存在冲突
+
+接下来考虑设计两个xApp, 首先, 实现的效果需要非常直观, 其次他们存在冲突, 两个放在一起效果就会差
+
+当 xapp_reliability_strict 与 xapp_energy_aggressive 同时部署时，会产生冲突。
+
+两个 xApp 对 同一组无线资源参数进行相反方向的控制。
+
+主要涉及三个参数：
+
+参数	reliability xApp	energy xApp
+txPowerOffset_dB	增大功率	降低功率
+bandwidthScale	扩展带宽	缩减带宽
+sleepState	始终 active	允许 sleep
+
+因此：
+
+同一参数存在多 xApp 控制且方向相反。
+
+
+
+```
+名字
+版本
+xApp功能描述
+控制的具体参数
+影响的主要KPI (默认不管的可以不写, 例如允许xxx下降...这个不管)
+写列入某KPI最大化, 某KPI约束在一定范围
+单独运行期望效果
+```
+
+### 发现一个bug: 可观测参数里面没有KPI, KPI似乎不可观测
+### 第二个, 似乎如果是静态情况, 冲突很难体现, 得上动态网络,不然以某些设定, 只要是调了, 效果可能都好于baseline
+

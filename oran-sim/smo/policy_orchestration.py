@@ -30,7 +30,7 @@ def build_prompt(
     prompt.append("你是RAN策略编排助手，请根据输入选择xApp集合。")
     prompt.append("输出必须是纯JSON，不允许其他文本。")
     prompt.append(
-        'JSON格式：{"policy": {"enabledXApps": ["xapp_id", ...]}, "reasoning": "..."}'
+        'JSON格式：{"policy": {"enabledXApps": ["xapp_id", ...], "kpi_focus": ["kpi", ...]}, "reasoning": "..."}'
     )
     prompt.append("")
     prompt.append(f"意图: {intent}")
@@ -48,6 +48,7 @@ def build_prompt(
     prompt.append(json.dumps(xapps, ensure_ascii=False))
     prompt.append("")
     prompt.append("reasoning需为简短中文理由，不要包含多余格式。")
+    prompt.append("kpi_focus请填写与意图相关的KPI名称列表。")
     prompt.append("请严格输出JSON。")
 
     return "\n".join(prompt)

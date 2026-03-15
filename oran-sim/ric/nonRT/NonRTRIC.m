@@ -9,6 +9,7 @@ classdef NonRTRIC
 
         reportPath
         policyPath
+        policiesPath
         timeout_s
         waitInterval_s
 
@@ -44,6 +45,12 @@ classdef NonRTRIC
                 obj.policyPath = string(cfg.nonRT.policyPath);
             end
             obj.policyPath = obj.resolvePath(obj.policyPath);
+
+            obj.policiesPath = "oran-sim/bus_A1/existing_policys.json";
+            if isfield(cfg,'nonRT') && isfield(cfg.nonRT,'policiesPath')
+                obj.policiesPath = string(cfg.nonRT.policiesPath);
+            end
+            obj.policiesPath = obj.resolvePath(obj.policiesPath);
 
             obj.timeout_s = 120;
             if isfield(cfg,'nonRT') && isfield(cfg.nonRT,'timeout_s')
@@ -135,8 +142,14 @@ classdef NonRTRIC
             if strcmp(status, "ok")
                 [policy, valid] = obj.normalizePolicy(policy);
                 if valid
-                    ric = ric.setPolicy(policy);
-                    obj.lastPolicy = policy;
+                    [mergedXApps, conflicts] = obj.handlePolicies(report, policy);
+                    obj.reportConflicts(conflicts);
+
+                    mergedPolicy = struct();
+                    mergedPolicy.enabledXApps = mergedXApps;
+
+                    ric = ric.setPolicy(mergedPolicy);
+                    obj.lastPolicy = mergedPolicy;
                     obj.lastPolicyStamp = obj.lastPolicyStamp + 1;
                     info.policyApplied = true;
                     info.policySource = "python";
@@ -214,6 +227,89 @@ classdef NonRTRIC
             end
             if exist(obj.policyPath, 'file') == 2
                 delete(obj.policyPath);
+            end
+        end
+
+        function [mergedXApps, conflicts] = handlePolicies(obj, report, newPolicy)
+
+            policies = obj.loadExistingPolicies();
+
+            newEntry = struct();
+            newEntry.policy_id = "policy_" + string(report.meta.slot);
+            newEntry.enabledXApps = string(newPolicy.enabledXApps(:));
+            newEntry.kpi_focus = string.empty(1,0);
+            newEntry.status = "active";
+            newEntry.created_at = string(report.meta.generatedAt);
+
+            if isfield(newPolicy,'kpi_focus')
+                newEntry.kpi_focus = string(newPolicy.kpi_focus(:));
+            end
+
+            policies = [policies; newEntry]; %#ok<AGROW>
+
+            [mergedXApps, conflicts] = policy_mitigation_a1(policies);
+
+            obj.saveExistingPolicies(policies);
+        end
+
+        function policies = loadExistingPolicies(obj)
+
+            policies = struct('policy_id', string.empty(0,1), ...
+                'enabledXApps', [], 'kpi_focus', [], 'status', string.empty(0,1), ...
+                'created_at', string.empty(0,1));
+
+            if exist(obj.policiesPath, 'file') ~= 2
+                return;
+            end
+
+            try
+                raw = fileread(obj.policiesPath);
+                data = jsondecode(raw);
+                if isfield(data,'policies')
+                    data = data.policies;
+                end
+                if isstruct(data)
+                    policies = data;
+                end
+            catch
+            end
+        end
+
+        function saveExistingPolicies(obj, policies)
+
+            obj.ensureParentDir(obj.policiesPath);
+            out = struct();
+            out.policies = policies;
+            obj.writeJson(out, obj.policiesPath);
+        end
+
+        function reportConflicts(obj, conflicts)
+
+            if ~obj.debugEnable
+                return;
+            end
+
+            if isempty(conflicts)
+                fprintf('[Non-RT RIC] conflict report: none\n');
+                return;
+            end
+
+            if isfield(conflicts,'kpi') && ~isempty(conflicts.kpi)
+                fprintf('[Non-RT RIC] KPI conflicts:\n');
+                for i = 1:numel(conflicts.kpi)
+                    c = conflicts.kpi(i);
+                    fprintf('  policy=%s vs %s kpi=%s\n', ...
+                        c.policy_a, c.policy_b, strjoin(cellstr(c.kpi(:)), ','));
+                end
+            end
+
+            if isfield(conflicts,'xapp') && ~isempty(conflicts.xapp)
+                fprintf('[Non-RT RIC] xApp conflicts:\n');
+                for i = 1:numel(conflicts.xapp)
+                    c = conflicts.xapp(i);
+                    fprintf('  policy=%s vs %s xapp=%s\n', ...
+                        c.policy_a, c.policy_b, strjoin(cellstr(c.xapp(:)), ','));
+                end
             end
         end
 

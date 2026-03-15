@@ -9,7 +9,7 @@ function run_nonrt_demo()
 
     cfg = default_config();
     cfg.debug.enable = false;
-    cfg.sim.slotPerEpisode = 5000;
+    cfg.sim.slotPerEpisode = 2000;
 
     cfg.nearRT.xappRoot = fullfile(rootDir, "xapps");
     cfg.nonRT.triggerTime_s = 1.0;

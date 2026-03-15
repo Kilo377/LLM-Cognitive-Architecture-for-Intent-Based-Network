@@ -73,4 +73,15 @@ cfg.traffic.enableBurst = true;
 %cfg.sweep.bandwidthScale   = [0.5 1 1.5];
 %cfg.sweep.sleepState       = [0 1 2];
 
+% ==============================
+% NON-RT RIC
+% ==============================
+cfg.nonRT.periodSlot = 50;
+cfg.nonRT.triggerTime_s = 0.4 * 1.0;
+cfg.nonRT.reportPath = "oran-sim/bus_A1/non_rt_report.json";
+cfg.nonRT.policyPath = "oran-sim/bus_A1/non_rt_policy.json";
+cfg.nonRT.timeout_s  = 120;
+cfg.nonRT.waitInterval_s = 0.5;
+cfg.nonRT.smoCommand = "/opt/anaconda3/bin/python -B /Users/kilobao/Documents/MATLAB/Examples/R2025b/5g/5GORAN/oran-sim/smo/smo.py";
+
 end

@@ -8,4 +8,10 @@ function rootDir = setup_path()
 
     addpath(genpath(rootDir));
 
+    % 统一工作目录到项目根目录，避免相对路径错位
+    try
+        cd(rootDir);
+    catch
+    end
+
 end

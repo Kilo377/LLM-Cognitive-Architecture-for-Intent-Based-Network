@@ -148,6 +148,7 @@ classdef ActionApplierModel
             ctrl.txPowerOffset_dB = zeros(numCell,1);
             ctrl.basePowerScale   = ones(numCell,1);
             ctrl.cellSleepState   = zeros(numCell,1);
+            ctrl.interferenceCouplingFactor = 1.0;
 
             % slot-only controls
             ctrl.selectedUE = zeros(numCell,1);
@@ -161,6 +162,8 @@ classdef ActionApplierModel
             ctrl.hysteresisOffset_dB = zeros(numCell,1);
             ctrl.tttOffset_slot      = zeros(numCell,1);
             ctrl.rlfSinrThresholdOffset_dB = 0;
+
+            ctrl.qosServicePriority = struct('eMBB',1.0,'URLLC',1.0,'mMTC',1.0);
         end
 
         function ctrl = ensureCtrlFields(obj, ctrl, numCell, numUE)
@@ -186,6 +189,9 @@ classdef ActionApplierModel
             if ~isvector(ctrl.cellSleepState) || numel(ctrl.cellSleepState) ~= numCell
                 ctrl.cellSleepState = zeros(numCell,1);
             end
+            if ~isfield(ctrl,'interferenceCouplingFactor') || isempty(ctrl.interferenceCouplingFactor)
+                ctrl.interferenceCouplingFactor = 1.0;
+            end
             if ~isvector(ctrl.selectedUE) || numel(ctrl.selectedUE) ~= numCell
                 ctrl.selectedUE = zeros(numCell,1);
             end
@@ -194,6 +200,10 @@ classdef ActionApplierModel
             end
             if ~isvector(ctrl.ueBeamId) || numel(ctrl.ueBeamId) ~= numUE
                 ctrl.ueBeamId = zeros(numUE,1);
+            end
+
+            if ~isfield(ctrl,'qosServicePriority') || isempty(ctrl.qosServicePriority)
+                ctrl.qosServicePriority = struct('eMBB',1.0,'URLLC',1.0,'mMTC',1.0);
             end
         end
 
@@ -217,11 +227,10 @@ classdef ActionApplierModel
                 end
             end
 
-            % power.cellTxPowerOffset_dB
-            if isfield(action,'power') && isfield(action.power,'cellTxPowerOffset_dB')
-                off = action.power.cellTxPowerOffset_dB;
-                if isnumeric(off) && numel(off) == numCell
-                    ctrl.txPowerOffset_dB = min(max(off(:),-40),40);
+            if isfield(action,'radio') && isfield(action.radio,'interferenceCouplingFactor')
+                f = action.radio.interferenceCouplingFactor;
+                if isnumeric(f)
+                    ctrl.interferenceCouplingFactor = min(max(f,0.01),10.0);
                 end
             end
 
@@ -269,6 +278,14 @@ classdef ActionApplierModel
                 end
             end
 
+            % beam.mode (slot-only)
+            if isfield(action,'beam') && isfield(action.beam,'mode')
+                m = string(action.beam.mode);
+                if m == "static" || m == "adaptive"
+                    ctrl.beamMode = m;
+                end
+            end
+
             % handover offsets (persistent)
             if isfield(action,'handover')
                 if isfield(action.handover,'hysteresisOffset_dB')
@@ -289,8 +306,19 @@ classdef ActionApplierModel
             if isfield(action,'rlf') && isfield(action.rlf,'sinrThresholdOffset_dB')
                 v = action.rlf.sinrThresholdOffset_dB;
                 if isnumeric(v)
-                    ctrl.rlfSinrThresholdOffset_dB = min(max(v,-5),5);
+                    ctrl.rlfSinrThresholdOffset_dB = min(max(v,-20),20);
                 end
+            end
+
+            if isfield(action,'qos') && isfield(action.qos,'servicePriority')
+                sp = action.qos.servicePriority;
+                if ~isfield(sp,'eMBB'), sp.eMBB = 1.0; end
+                if ~isfield(sp,'URLLC'), sp.URLLC = 1.0; end
+                if ~isfield(sp,'mMTC'), sp.mMTC = 1.0; end
+                sp.eMBB  = max(min(sp.eMBB,  10.0),0.0);
+                sp.URLLC = max(min(sp.URLLC, 10.0),0.0);
+                sp.mMTC  = max(min(sp.mMTC,  10.0),0.0);
+                ctrl.qosServicePriority = sp;
             end
         end
 
@@ -386,6 +414,10 @@ classdef ActionApplierModel
             if lvl >= 3
                 fprintf('  runtime: bandwidthHzPerCell=%s\n', mat2str(ctx.bandwidthHzPerCell(:).'));
                 fprintf('  ctrl(slotOnly): selectedUE=%s\n', mat2str(ctx.ctrl.selectedUE(:).'));
+                if ~isempty(ctx.ctrl.selectedUE)
+                    fprintf('  ctrl(slotOnly): selectedUE_min=%d max=%d\n', ...
+                        min(ctx.ctrl.selectedUE(:)), max(ctx.ctrl.selectedUE(:)));
+                end
             end
         end
     end

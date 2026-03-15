@@ -1,0 +1,20 @@
+{
+  "xapp_id": "xapp_energy_saver",
+  "version": "2.0.0",
+  "name": "Energy Saver xApp",
+
+  "description": "Reduces energy under low load by scaling power, bandwidth, and sleep state. It applies conservative protection when edge SINR is poor to avoid severe reliability loss.",
+
+  "entry_point": "xapp_energy_saver",
+
+  "control_parameters": [
+    "radio.bandwidthScale",
+    "radio.txPowerOffset_dB",
+    "energy.basePowerScale",
+    "sleep.cellSleepState"
+  ],
+
+  "kpi_objectives": {
+    "efficiency.bitPerJ": "maximize"
+  }
+}

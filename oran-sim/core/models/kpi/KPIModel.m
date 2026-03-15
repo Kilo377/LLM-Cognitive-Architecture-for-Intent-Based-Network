@@ -39,6 +39,13 @@ classdef KPIModel
 
             ctx.tmp.kpi.capacity.throughput_Mbps_total = thr_Mbps_total;
             ctx.tmp.kpi.capacity.jainFairness = localJain(thrBitPerUE);
+            ctx.tmp.kpi.capacity.top10Share = localTopShare(thrBitPerUE, 0.10);
+
+            %% =====================================================
+            % 1.1) QoS CAPACITY
+            %% =====================================================
+            ctx.tmp.kpi.qos = struct();
+            ctx.tmp.kpi.qos.throughput_Mbps = localQosThroughput(ctx, t_s);
 
             %% =====================================================
             % 2️⃣ RELIABILITY
@@ -52,6 +59,11 @@ classdef KPIModel
             ctx.tmp.kpi.reliability.meanBLER = meanBLER;
             ctx.tmp.kpi.reliability.rlfCount = ctx.accRLFCount;
             ctx.tmp.kpi.reliability.dropRatio = computeDrop(ctx, obj, thrBitTotal);
+
+            %% =====================================================
+            % 2.1) QoS RELIABILITY
+            %% =====================================================
+            ctx.tmp.kpi.qos.dropRatio = localQosDrop(ctx, obj);
 
             %% =====================================================
             % 3️⃣ EFFICIENCY
@@ -232,4 +244,57 @@ else
     j = (sx^2) / (n * sx2);
 end
 j = min(max(j,0),1);
+end
+
+function out = localQosThroughput(ctx, t_s)
+
+names = ["eMBB","URLLC","mMTC"];
+bits = zeros(3,1);
+if isprop(ctx,'accQosServedBits') && numel(ctx.accQosServedBits) == 3
+    bits = ctx.accQosServedBits(:);
+end
+
+out = struct();
+for i = 1:3
+    out.(names(i)) = (bits(i) / max(t_s, eps)) / 1e6;
+end
+end
+
+function s = localTopShare(x, ratio)
+x = double(x(:));
+total = sum(x);
+if total <= 0
+    s = 0;
+    return;
+end
+n = numel(x);
+k = max(1, round(n * ratio));
+x = sort(x, 'descend');
+s = sum(x(1:k)) / total;
+end
+
+function out = localQosDrop(ctx, obj)
+
+names = ["eMBB","URLLC","mMTC"];
+dropCnt = zeros(3,1);
+servedBits = zeros(3,1);
+
+if isprop(ctx,'accQosDroppedCount') && numel(ctx.accQosDroppedCount) == 3
+    dropCnt = ctx.accQosDroppedCount(:);
+end
+
+if isprop(ctx,'accQosServedBits') && numel(ctx.accQosServedBits) == 3
+    servedBits = ctx.accQosServedBits(:);
+end
+
+out = struct();
+for i = 1:3
+    deliveredPktsApprox = servedBits(i) / max(obj.avgPacketBitsForDropRatio,1);
+    denom = dropCnt(i) + deliveredPktsApprox;
+    if denom > 0
+        out.(names(i)) = dropCnt(i) / denom;
+    else
+        out.(names(i)) = 0;
+    end
+end
 end

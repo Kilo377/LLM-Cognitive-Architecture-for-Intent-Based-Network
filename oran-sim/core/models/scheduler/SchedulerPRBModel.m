@@ -83,7 +83,7 @@ classdef SchedulerPRBModel
             % Sleep gating (ctrl only)
             %===============================
             cellIsSleeping = false(numCell,1);
-            if isfield(ctx,'ctrl') && isfield(ctx.ctrl,'cellSleepState')
+            if isprop(ctx,'ctrl') && isfield(ctx.ctrl,'cellSleepState')
                 ss = ctx.ctrl.cellSleepState(:);
                 if numel(ss) == numCell
                     cellIsSleeping = (ss >= 1);
@@ -110,6 +110,11 @@ classdef SchedulerPRBModel
                 traceC.selectedUE = 0;
                 traceC.prbUsed  = 0;
                 traceC.numSchedUE = 0;
+                traceC.ueCount_all = 0;
+                traceC.ueCount_available = 0;
+                traceC.ueCount_nonempty = 0;
+                traceC.selQueueBits = 0;
+                traceC.maxQueueBits = 0;
 
                 % Episode PRB total
                 ctx.accPRBTotalPerCell(c) = ctx.accPRBTotalPerCell(c) + totalPRB;
@@ -127,6 +132,7 @@ classdef SchedulerPRBModel
                 end
 
                 ueSet = find(ctx.servingCell == c);
+                traceC.ueCount_all = numel(ueSet);
 
                 if isempty(ueSet)
                     traceC.reason = "noUE";
@@ -135,6 +141,7 @@ classdef SchedulerPRBModel
                 end
 
                 ueSet = obj.filterUnavailableUE(ctx, ueSet);
+                traceC.ueCount_available = numel(ueSet);
 
                 if isempty(ueSet)
                     traceC.reason = "allBlocked";
@@ -143,6 +150,7 @@ classdef SchedulerPRBModel
                 end
 
                 ueSet = obj.filterEmptyBufferUE(ctx, ueSet);
+                traceC.ueCount_nonempty = numel(ueSet);
 
                 if isempty(ueSet)
                     traceC.reason = "emptyBuffer";
@@ -153,6 +161,10 @@ classdef SchedulerPRBModel
                 [selU, selReason] = obj.getSelectedUE_fromCtrl(ctx, c, numUE, ueSet);
                 traceC.selectedUE = selU;
                 traceC.selectedUE_reason = selReason;
+
+                if ~isempty(ueSet)
+                    [traceC.maxQueueBits, traceC.selQueueBits] = obj.getQueueBitsInfo(ctx, ueSet, selU);
+                end
 
                 [ctx, schedUE, prbAlloc] = obj.allocatePRB(ctx, c, ueSet, selU, totalPRB);
 
@@ -239,7 +251,7 @@ classdef SchedulerPRBModel
             selU = 0;
             reason = "noCtrl";
 
-            if ~isfield(ctx,'ctrl') || ~isfield(ctx.ctrl,'selectedUE')
+            if ~isprop(ctx,'ctrl') || ~isfield(ctx.ctrl,'selectedUE')
                 return;
             end
 
@@ -251,6 +263,11 @@ classdef SchedulerPRBModel
             end
 
             v = round(sel(c));
+
+            if v == 0
+                reason = "noneSelected";
+                return;
+            end
 
             if v < 1 || v > numUE
                 reason = "outOfRange";
@@ -356,8 +373,35 @@ classdef SchedulerPRBModel
                 end
             end
 
-            ueList = ueList(1:obj.maxUEPerCell);
-            alloc  = alloc(1:obj.maxUEPerCell);
+            if numel(ueList) > obj.maxUEPerCell
+                droppedAlloc = sum(alloc(obj.maxUEPerCell+1:end));
+                ueList = ueList(1:obj.maxUEPerCell);
+                alloc  = alloc(1:obj.maxUEPerCell);
+
+                if droppedAlloc > 0 && ~isempty(alloc)
+                    alloc(1) = alloc(1) + droppedAlloc;
+                end
+            end
+        end
+
+        function [maxBits, selBits] = getQueueBitsInfo(~, ctx, ueSet, selU)
+            maxBits = 0;
+            selBits = 0;
+            for i = 1:numel(ueSet)
+                u = ueSet(i);
+                q = ctx.scenario.traffic.model.getQueue(u);
+                if isempty(q)
+                    bits = 0;
+                else
+                    bits = sum([q.size]);
+                end
+                if bits > maxBits
+                    maxBits = bits;
+                end
+                if u == selU
+                    selBits = bits;
+                end
+            end
         end
 
         %===============================
@@ -395,6 +439,7 @@ classdef SchedulerPRBModel
             if isfield(ctx,'sinr_dB') && numel(ctx.sinr_dB) > 0
                 t.runtime.meanSINR = mean(ctx.sinr_dB);
             end
+
 
             if useCtxDebug
                 ctx.debug.trace.(obj.moduleName) = t;
@@ -455,7 +500,43 @@ classdef SchedulerPRBModel
                     fprintf('  meanSINR=%.2f dB\n', tr.runtime.meanSINR);
                 end
             end
+
+            if isfield(tr,'slotTrace') && isfield(tr.slotTrace,'cell')
+                nCell = numel(tr.slotTrace.cell);
+                reasons = strings(1,nCell);
+                selReasons = strings(1,nCell);
+                for i = 1:nCell
+                    sc = tr.slotTrace.cell{i};
+                    if isfield(sc,'reason')
+                        reasons(i) = string(sc.reason);
+                    end
+                    if isfield(sc,'selectedUE_reason')
+                        selReasons(i) = string(sc.selectedUE_reason);
+                    end
+                end
+                fprintf('  cellReason=%s\n', join(reasons, ","));
+                fprintf('  selectedUEReason=%s\n', join(selReasons, ","));
+
+                countsAll = zeros(1,nCell);
+                countsAvail = zeros(1,nCell);
+                countsNonempty = zeros(1,nCell);
+                selBits = zeros(1,nCell);
+                maxBits = zeros(1,nCell);
+                selU = zeros(1,nCell);
+                for i = 1:nCell
+                    sc = tr.slotTrace.cell{i};
+                    if isfield(sc,'ueCount_all'), countsAll(i) = sc.ueCount_all; end
+                    if isfield(sc,'ueCount_available'), countsAvail(i) = sc.ueCount_available; end
+                    if isfield(sc,'ueCount_nonempty'), countsNonempty(i) = sc.ueCount_nonempty; end
+                    if isfield(sc,'selQueueBits'), selBits(i) = sc.selQueueBits; end
+                    if isfield(sc,'maxQueueBits'), maxBits(i) = sc.maxQueueBits; end
+                    if isfield(sc,'selectedUE'), selU(i) = sc.selectedUE; end
+                end
+                fprintf('  ueCount(all/avail/nonempty)=%s/%s/%s\n', ...
+                    mat2str(countsAll), mat2str(countsAvail), mat2str(countsNonempty));
+                fprintf('  selectedUE=%s selQueueBits=%s maxQueueBits=%s\n', ...
+                    mat2str(selU), mat2str(selBits), mat2str(maxBits));
+            end
         end
     end
 end
-

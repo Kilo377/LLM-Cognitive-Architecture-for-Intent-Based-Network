@@ -1,0 +1,41 @@
+{
+  "xapp_id": "xapp_capacity_boost",
+  "version": "2.0.0",
+  "name": "Capacity Boost xApp",
+
+  "description": "Boosts throughput under congestion by scaling bandwidth and transmit power. It selects the highest queue-pressure UE per cell with light SINR bias. It may increase interference and energy usage.",
+
+  "entry_point": "xapp_capacity_boost",
+
+  "control_parameters": [
+    {
+      "domain": "radio",
+      "parameter": "bandwidthScale",
+      "semantic": "Increase available PRBs per cell when load is high."
+    },
+    {
+      "domain": "radio",
+      "parameter": "txPowerOffset_dB",
+      "semantic": "Increase cell transmit power to improve SINR under load."
+    },
+    {
+      "domain": "scheduling",
+      "parameter": "selectedUE",
+      "semantic": "Prioritize high backlog UEs with light SINR bias."
+    }
+  ],
+
+  "affected_kpis": {
+    "maximize": [
+      "Throughput"
+    ],
+    "may_decrease": [
+      "BitPerJ",
+      "Fairness"
+    ],
+    "may_increase": [
+      "Interference",
+      "Energy"
+    ]
+  }
+}

@@ -1,7 +1,7 @@
 %{
 Author: Chongyu Bao (zt25108@bristol.ac.uk)
 
-File: run_visualize_ue.m
+File: run_network_visualize_ue_distribution.m
 
 Description:
 Standalone visualization runner.
@@ -11,6 +11,12 @@ runs mobility only,
 computes nearest-cell association,
 and visualizes UE distribution.
 %}
+
+runDir = fileparts(mfilename('fullpath'));
+if exist('setup_path','file') ~= 2
+    addpath(fullfile(runDir,'..'));
+end
+setup_path();
 
 clear; clc;
 

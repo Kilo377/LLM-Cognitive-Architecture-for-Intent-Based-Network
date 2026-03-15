@@ -38,7 +38,7 @@ classdef BeamformingModel
             addParameter(p,'sideLobeGain_dB',-3);
             addParameter(p,'beamwidth3dB_deg',20);
             addParameter(p,'defaultPolicy',"slightly_suboptimal");
-            addParameter(p,'mismatchPenalty_dB',2);
+            addParameter(p,'mismatchPenalty_dB',4);
             addParameter(p,'perCellSeed',7);
             parse(p,varargin{:});
 
@@ -104,7 +104,7 @@ classdef BeamformingModel
             hasControl = false(numUE,1);
             mode = "static";
 
-            if isfield(ctx,'ctrl') && ~isempty(ctx.ctrl)
+            if isprop(ctx,'ctrl') && ~isempty(ctx.ctrl)
                 if isfield(ctx.ctrl,'ueBeamId')
                     v = ctx.ctrl.ueBeamId;
                     if isnumeric(v) && numel(v)==numUE
@@ -143,7 +143,19 @@ classdef BeamformingModel
                         phi_b = obj.beamAzimuth_rad(c,b);
                         gain = obj.patternGain(phi, phi_b);
                     else
-                        gain = obj.defaultGain(phi, c);
+                        if mode == "adaptive"
+                            s = ctx.servingCell(u);
+                            if s < 1 || s > numCell
+                                s = 1;
+                            end
+                            if c == s
+                                gain = obj.bestGain(phi, c);
+                            else
+                                gain = obj.defaultGain(phi, c);
+                            end
+                        else
+                            gain = obj.defaultGain(phi, c);
+                        end
                     end
 
                     % optional future mode hooks
@@ -201,6 +213,18 @@ classdef BeamformingModel
             gain = best - obj.mismatchPenalty_dB;
         end
 
+        function gain = bestGain(obj, phi, c)
+            nb = obj.numBeamPerCell;
+            best = -inf;
+            for b = 1:nb
+                g = obj.patternGain(phi, obj.beamAzimuth_rad(c,b));
+                if g > best
+                    best = g;
+                end
+            end
+            gain = best;
+        end
+
         function gain = patternGain(obj, phi, phi_b)
             d = obj.wrapToPi(phi - phi_b);
 
@@ -215,4 +239,3 @@ classdef BeamformingModel
         end
     end
 end
-

@@ -23,12 +23,18 @@ classdef EnergyModelBS
         P0_on_W
         P0_scale
 
+        % Base power coupling
+        baseBwGamma
+        baseTxSlope
+        txRef_dBm
+
         % Power amplifier
         kPA
 
         % Load dependent
         kLoad_W
         loadGamma
+        loadBwGamma
 
         % Event signaling
         E_ho_J
@@ -51,10 +57,15 @@ classdef EnergyModelBS
             obj.P0_on_W   = 800;
             obj.P0_scale  = [1.0 0.55 0.25];
 
-            obj.kPA       = 4.0;
+            obj.baseBwGamma = 0.45;
+            obj.baseTxSlope = 0.08;
+            obj.txRef_dBm = [];
+
+            obj.kPA       = 20.0;
 
             obj.kLoad_W   = 120;
             obj.loadGamma = 1.2;
+            obj.loadBwGamma = 0.8;
 
             obj.E_ho_J       = 2.0;
             obj.E_pingpong_J = 1.0;
@@ -126,11 +137,22 @@ classdef EnergyModelBS
             txPower_dBm = min(max(ctx.txPowerCell_dBm(:),-100),80);
             Ptx_W = 10.^((txPower_dBm - 30)/10);
 
+            if isempty(obj.txRef_dBm)
+                obj.txRef_dBm = mean(ctx.baseline.txPowerCell_dBm(:));
+            end
+            txShift = mean(txPower_dBm) - obj.txRef_dBm;
+            txScale = 1 + obj.baseTxSlope * txShift;
+            txScale = min(max(txScale,0.6),2.0);
+
+            bwScale = ctx.numPRBPerCell(:) ./ max(ctx.baseline.numPRBPerCell(:),1);
+            bwScale = min(max(bwScale,0.2),5.0);
+
             %---------------------------------------
             % 5) Compute components
             %---------------------------------------
             % Base
             P0 = obj.P0_on_W * sleepScale;
+            P0 = P0 .* (bwScale.^obj.baseBwGamma) .* txScale;
             if obj.applyToBase
                 P0 = P0 .* energyScale;
             end
@@ -145,7 +167,7 @@ classdef EnergyModelBS
             Ppa(ss==2) = 0;
 
             % Load dependent
-            Pld = obj.kLoad_W * (load.^obj.loadGamma);
+            Pld = obj.kLoad_W * (load.^obj.loadGamma) .* (bwScale.^obj.loadBwGamma);
 
             % Total
             P = P0 + Ppa + Pld;

@@ -119,6 +119,11 @@ classdef RanContext < handle
         accScheduledUeSumPerCell
         accScheduledUeCountPerCell
 
+        accQosArrivedBits
+        accQosServedBits
+        accQosDroppedBits
+        accQosDroppedCount
+
         %% =========================================================
         % Per-slot observability
         %% =========================================================
@@ -205,9 +210,12 @@ classdef RanContext < handle
             obj.ctrl.selectedUE     = zeros(numCell,1);
             obj.ctrl.bandwidthScale = ones(numCell,1);
             obj.ctrl.txPowerOffset_dB = zeros(numCell,1);
+            obj.ctrl.interferenceCouplingFactor = 1.0;
 
             obj.ctrl.ueBeamId = zeros(numUE,1);
             obj.ctrl.beamMode = "static";
+
+            obj.ctrl.qosServicePriority = struct('eMBB',1.0,'URLLC',1.0,'mMTC',1.0);
 
             %% HO / RLF
             obj.hoTimer                = zeros(numUE,1);
@@ -252,6 +260,11 @@ classdef RanContext < handle
 
             obj.accScheduledUeSumPerCell   = zeros(numCell,1);
             obj.accScheduledUeCountPerCell = zeros(numCell,1);
+
+            obj.accQosArrivedBits  = zeros(3,1);
+            obj.accQosServedBits   = zeros(3,1);
+            obj.accQosDroppedBits  = zeros(3,1);
+            obj.accQosDroppedCount = zeros(3,1);
 
             %% Observability
             obj.lastNumPRB                  = obj.numPRB;
@@ -336,6 +349,10 @@ classdef RanContext < handle
             s.time.slot = obj.slot;
             s.time.t_s  = obj.slot * obj.dt;
 
+            if isfield(obj.scenario,'topology') && isfield(obj.scenario.topology,'gNBPos')
+                s.topology.gNBPos = obj.scenario.topology.gNBPos;
+            end
+
             s.ue.pos         = obj.uePos;
             s.ue.servingCell = obj.servingCell;
             s.ue.sinr_dB     = obj.sinr_dB;
@@ -343,6 +360,25 @@ classdef RanContext < handle
             s.ue.measRsrp_dBm= obj.measRsrp_dBm;
 
             s.ue.inOutage = obj.ueInOutageUntilSlot > obj.slot;
+
+            if isfield(obj.tmp,'ue')
+                if isfield(obj.tmp.ue,'buffer_bits')
+                    s.ue.buffer_bits = obj.tmp.ue.buffer_bits;
+                end
+                if isfield(obj.tmp.ue,'urgent_pkts')
+                    s.ue.urgent_pkts = obj.tmp.ue.urgent_pkts;
+                end
+                if isfield(obj.tmp.ue,'minDeadline_slot')
+                    s.ue.minDeadline_slot = obj.tmp.ue.minDeadline_slot;
+                end
+            end
+
+            if isfield(obj.tmp,'lastMCSPerUE')
+                s.ue.mcs = obj.tmp.lastMCSPerUE;
+            end
+            if isfield(obj.tmp,'lastBLERPerUE')
+                s.ue.bler = obj.tmp.lastBLERPerUE;
+            end
 
             s.cell.txPower_dBm = obj.txPowerCell_dBm;
             s.cell.bandwidthHz = obj.bandwidthHzPerCell;
@@ -360,11 +396,48 @@ classdef RanContext < handle
             s.cell.sleepState = obj.ctrl.cellSleepState;
             s.cell.energy_J   = obj.accEnergyJPerCell;
 
+            if isfield(obj.tmp,'cell') && isfield(obj.tmp.cell,'power_W')
+                s.cell.power_W = obj.tmp.cell.power_W;
+            end
+
             s.kpi.throughputBitPerUE = obj.accThroughputBitPerUE;
             s.kpi.dropTotal          = obj.accDroppedTotal;
             s.kpi.dropURLLC          = obj.accDroppedURLLC;
             s.kpi.handoverCount      = obj.accHOCount;
             s.kpi.rlfCount           = obj.accRLFCount;
+
+            if isfield(obj.tmp,'channel') && isfield(obj.tmp.channel,'interference_dBm')
+                s.channel.interference_dBm = obj.tmp.channel.interference_dBm;
+            end
+            s.channel.noise_dBm = obj.thermalNoiseCell_dBm;
+
+            if isfield(obj.tmp,'kpi') && isfield(obj.tmp.kpi,'qos')
+                s.kpi.qos = obj.tmp.kpi.qos;
+            end
+
+            if isfield(obj.tmp,'kpi')
+                if isfield(obj.tmp.kpi,'capacity')
+                    s.kpi.capacity = obj.tmp.kpi.capacity;
+                end
+                if isfield(obj.tmp.kpi,'reliability')
+                    s.kpi.reliability = obj.tmp.kpi.reliability;
+                end
+                if isfield(obj.tmp.kpi,'efficiency')
+                    s.kpi.efficiency = obj.tmp.kpi.efficiency;
+                end
+                if isfield(obj.tmp.kpi,'resource')
+                    s.kpi.resource = obj.tmp.kpi.resource;
+                end
+                if isfield(obj.tmp.kpi,'phy')
+                    s.kpi.phy = obj.tmp.kpi.phy;
+                end
+                if isfield(obj.tmp.kpi,'system')
+                    s.kpi.system = obj.tmp.kpi.system;
+                end
+                if isfield(obj.tmp.kpi,'stability')
+                    s.kpi.stability = obj.tmp.kpi.stability;
+                end
+            end
 
             s.ctrl = obj.ctrl;
 

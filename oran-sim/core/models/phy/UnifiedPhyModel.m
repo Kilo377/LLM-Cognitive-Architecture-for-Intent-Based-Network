@@ -17,7 +17,12 @@ classdef UnifiedPhyModel
 
         % NR-like mapping
         sinrThresholdTable
-        randomStdFactor = 0.05   % 轻微随机幅度
+        sinrOffset_dB = 5
+        blerFloor = 0.02
+        blerSlopeBase = 1.2
+        randomStdFactor = 0.01   % 轻微随机幅度
+
+        useBernoulliSuccess = false
 
         debugFirstSlots = 3
     end
@@ -26,7 +31,7 @@ classdef UnifiedPhyModel
 
         function obj = UnifiedPhyModel(~,~)
 
-            obj.sinrThresholdTable = -7 + 0.9*(0:27);
+            obj.sinrThresholdTable = -7 + 0.9*(0:27) + obj.sinrOffset_dB;
         end
 
         % ============================================================
@@ -94,28 +99,52 @@ classdef UnifiedPhyModel
                     % BLER (logistic)
                     % -------------------------------------------------
                     thr = obj.sinrThresholdTable(mcs+1);
-                    kSlope = min(1.6, 0.9 + 0.02*mcs);
+                    kSlope = min(1.8, obj.blerSlopeBase + 0.02*mcs);
 
                     bler = 1 / (1 + exp(kSlope*(sinrEff - thr)));
 
                     % 轻微随机扰动
                     bler = bler + obj.randomStdFactor * randn;
-                    bler = min(max(bler,0),1);
+                    bler = min(max(bler,obj.blerFloor),1);
 
                     blerPerUE(u) = bler;
 
                     % -------------------------------------------------
                     % Served bits (期望 + 小随机)
                     % -------------------------------------------------
-                    served = tbs_bits * (1 - bler);
+                    if obj.useBernoulliSuccess
+                        success = rand > bler;
+                        served = tbs_bits * double(success);
+                    else
+                        served = tbs_bits * (1 - bler);
+                    end
 
-                    % 小比例波动
                     served = served * (1 + obj.randomStdFactor * randn);
-
                     served = max(served,0);
 
-                    [ctx.scenario.traffic.model, servedFinal] = ...
-                        ctx.scenario.traffic.model.serve(u, served);
+                    qosPriority = [];
+                    if isprop(ctx,'ctrl') && isfield(ctx.ctrl,'qosServicePriority')
+                        qosPriority = ctx.ctrl.qosServicePriority;
+                    end
+
+                    if ~isempty(qosPriority)
+                        [ctx.scenario.traffic.model, servedFinal, servedQosBits] = ...
+                            ctx.scenario.traffic.model.serveWithPriority(u, served, qosPriority);
+                    else
+                        [ctx.scenario.traffic.model, servedFinal, servedQosBits] = ...
+                            ctx.scenario.traffic.model.serveWithPriority(u, served, []);
+                    end
+
+                    if ~isprop(ctx,'accQosServedBits') || isempty(ctx.accQosServedBits)
+                        ctx.accQosServedBits = zeros(3,1);
+                    end
+                    ctx.accQosServedBits = ctx.accQosServedBits + servedQosBits;
+
+                    if ~isfield(ctx.tmp,'qos') || isempty(ctx.tmp.qos)
+                        ctx.tmp.qos = struct();
+                        ctx.tmp.qos.servedBits = zeros(3,1);
+                    end
+                    ctx.tmp.qos.servedBits = ctx.tmp.qos.servedBits + servedQosBits;
 
                     servedBitsPerUE(u) = servedFinal;
                 end

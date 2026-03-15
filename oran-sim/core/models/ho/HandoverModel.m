@@ -76,7 +76,7 @@ classdef HandoverModel
             % 0) Active cell mask (exclude sleeping cells) - ctrl only
             %==================================================
             cellActive = true(numCell,1);
-            if isfield(ctx,'ctrl') && isfield(ctx.ctrl,'cellSleepState')
+            if isprop(ctx,'ctrl') && isfield(ctx.ctrl,'cellSleepState')
                 ss = round(ctx.ctrl.cellSleepState(:));
                 if numel(ss) == numCell
                     cellActive = (ss == 0);
@@ -87,7 +87,7 @@ classdef HandoverModel
             % 0.1) Control knobs from ctrl (optional)
             %==================================================
             hoOffset = zeros(numCell,1);
-            if isfield(ctx,'ctrl') && isfield(ctx.ctrl,'hysteresisOffset_dB')
+            if isprop(ctx,'ctrl') && isfield(ctx.ctrl,'hysteresisOffset_dB')
                 v = ctx.ctrl.hysteresisOffset_dB(:);
                 if numel(v) == numCell
                     hoOffset = v;
@@ -96,7 +96,7 @@ classdef HandoverModel
             effectiveHyst = obj.hysteresis_dB + hoOffset;
 
             tttEff = obj.ttt_slot * ones(numUE,1);
-            if isfield(ctx,'ctrl') && isfield(ctx.ctrl,'tttOffset_slot')
+            if isprop(ctx,'ctrl') && isfield(ctx.ctrl,'tttOffset_slot')
                 v = ctx.ctrl.tttOffset_slot(:);
                 if numel(v) == numCell
                     % apply per-serving-cell offset
@@ -112,9 +112,11 @@ classdef HandoverModel
             tttEff = max(1, round(tttEff));
 
             rlfThr = obj.rlfSinrThresh_dB;
-            if isfield(ctx,'ctrl') && isfield(ctx.ctrl,'rlfSinrThresholdOffset_dB')
+            rlfOffset = 0;
+            if isprop(ctx,'ctrl') && isfield(ctx.ctrl,'rlfSinrThresholdOffset_dB')
                 v = ctx.ctrl.rlfSinrThresholdOffset_dB;
                 if isnumeric(v)
+                    rlfOffset = v;
                     rlfThr = rlfThr + v;
                 end
             end
@@ -177,6 +179,9 @@ classdef HandoverModel
             % 4) RLF detection + outage handling
             %==================================================
             rlfCountSlot = 0;
+            numBelowRlfThr = 0;
+            rlfTimerSum = 0;
+            rlfTimerMax = 0;
 
             for u = 1:numUE
 
@@ -186,9 +191,15 @@ classdef HandoverModel
                 end
 
                 if ctx.sinr_dB(u) < rlfThr
+                    numBelowRlfThr = numBelowRlfThr + 1;
                     ctx.rlfTimer(u) = ctx.rlfTimer(u) + 1;
                 else
                     ctx.rlfTimer(u) = 0;
+                end
+
+                rlfTimerSum = rlfTimerSum + ctx.rlfTimer(u);
+                if ctx.rlfTimer(u) > rlfTimerMax
+                    rlfTimerMax = ctx.rlfTimer(u);
                 end
 
                 if ctx.rlfTimer(u) >= obj.rlfTTT_slot
@@ -305,7 +316,8 @@ classdef HandoverModel
             %==================================================
             % 6) Debug trace + optional print
             %==================================================
-            ctx = obj.writeDebugTrace(ctx, cellActive, effectiveHyst, rlfThr, hoCountSlot, pingPongInc, rlfCountSlot);
+            ctx = obj.writeDebugTrace(ctx, cellActive, effectiveHyst, rlfThr, rlfOffset, hoCountSlot, pingPongInc, rlfCountSlot, ...
+                numBelowRlfThr, rlfTimerMax, rlfTimerSum);
 
             if obj.shouldPrint(ctx)
                 obj.printDebug(ctx);
@@ -318,7 +330,8 @@ classdef HandoverModel
     %=========================================================
     methods (Access = private)
 
-        function ctx = writeDebugTrace(obj, ctx, cellActive, effectiveHyst, rlfThr, hoCountSlot, pingPongInc, rlfCountSlot)
+        function ctx = writeDebugTrace(obj, ctx, cellActive, effectiveHyst, rlfThr, rlfOffset, hoCountSlot, pingPongInc, rlfCountSlot, ...
+                numBelowRlfThr, rlfTimerMax, rlfTimerSum)
 
             % ===== must use ctx.tmp.debug =====
             if isempty(ctx.tmp)
@@ -336,7 +349,7 @@ classdef HandoverModel
         
             % ---- ctrl snapshot
             t.ctrl = struct();
-            if isfield(ctx,'ctrl')
+            if isprop(ctx,'ctrl')
                 if isfield(ctx.ctrl,'cellSleepState')
                     t.ctrl.sleepState = ctx.ctrl.cellSleepState(:).';
                 end
@@ -346,12 +359,17 @@ classdef HandoverModel
                 if isfield(ctx.ctrl,'tttOffset_slot')
                     t.ctrl.tttOffset = ctx.ctrl.tttOffset_slot(:).';
                 end
+                if isfield(ctx.ctrl,'rlfSinrThresholdOffset_dB')
+                    t.ctrl.rlfOffset = ctx.ctrl.rlfSinrThresholdOffset_dB;
+                end
             end
         
             % ---- derived runtime values
             t.derived = struct();
             t.derived.cellActive    = cellActive(:).';
             t.derived.effectiveHyst = effectiveHyst(:).';
+            t.derived.rlfBase_dB     = obj.rlfSinrThresh_dB;
+            t.derived.rlfOffset_dB   = rlfOffset;
             t.derived.rlfThr_dB     = rlfThr;
         
             % ---- slot events
@@ -365,6 +383,13 @@ classdef HandoverModel
             t.health.meanSinr_dB = mean(ctx.sinr_dB);
             t.health.minSinr_dB  = min(ctx.sinr_dB);
             t.health.meanRsrpServing_dBm = localMeanServingRsrp(ctx);
+            t.health.numBelowRlfThr = numBelowRlfThr;
+            t.health.rlfTimerMax = rlfTimerMax;
+            if ctx.cfg.scenario.numUE > 0
+                t.health.rlfTimerMean = rlfTimerSum / ctx.cfg.scenario.numUE;
+            else
+                t.health.rlfTimerMean = 0;
+            end
         
             ctx.tmp.debug.trace.(obj.moduleName) = t;
         end
@@ -420,7 +445,13 @@ classdef HandoverModel
             if isfield(tr,'derived')
                 fprintf('  cellActive=%s\n', mat2str(tr.derived.cellActive));
                 fprintf('  effHyst=%s\n', mat2str(tr.derived.effectiveHyst));
-                fprintf('  rlfThr_dB=%.2f\n', tr.derived.rlfThr_dB);
+                fprintf('  rlfBase_dB=%.2f rlfOffset_dB=%.2f rlfThr_dB=%.2f\n', ...
+                    tr.derived.rlfBase_dB, tr.derived.rlfOffset_dB, tr.derived.rlfThr_dB);
+            end
+
+            if isfield(tr,'health')
+                fprintf('  rlfBelowThr=%d rlfTimerMax=%d rlfTimerMean=%.2f\n', ...
+                    tr.health.numBelowRlfThr, tr.health.rlfTimerMax, tr.health.rlfTimerMean);
             end
         end
 

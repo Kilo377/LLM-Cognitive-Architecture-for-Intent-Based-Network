@@ -3,7 +3,7 @@ function cfg = default_config()
 % ==============================
 % SIMULATION
 % ==============================
-cfg.sim.slotDuration     = 10 * 1e-3 * 20;     % 1ms
+cfg.sim.slotDuration     = 1e-3;     % 1ms
 cfg.sim.slotPerEpisode   = 200;      % episode length
 cfg.sim.randomSeed       = 2026;     % reproducible
 
@@ -20,6 +20,12 @@ cfg.debug.level   = 2;         % 详细等级1
 % ==============================
 cfg.scenario.numCell = 4;
 cfg.scenario.numUE   = 40;
+
+% ==============================
+% CONTROL
+% ==============================
+cfg.ctrl = struct();
+cfg.ctrl.selectedUEPolicy = "none";
 
 % ==============================
 % RADIO BASELINE

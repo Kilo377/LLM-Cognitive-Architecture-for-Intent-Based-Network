@@ -134,8 +134,10 @@ classdef RanKernelNR
                 end
             end
 
+            obj.ctx = obj.accumulateQosArrivals(obj.ctx, obj.trafficModel);
+            obj.attachTrafficDebug();
+
             if dbgOn && dbgThisSlot
-                obj.attachTrafficDebug();
                 obj.printChainSnapshot("After Traffic", obj.ctx);
             end
 
@@ -162,6 +164,11 @@ classdef RanKernelNR
             % --------------------------------------------------
             obj.ctx = obj.hoModel.step(obj.ctx);
 
+            % --------------------------------------------------
+            % 5.1) Post-traffic control hook (selectedUE policy)
+            % --------------------------------------------------
+            obj.ctx = obj.applySelectedUEPolicy(obj.ctx);
+
             if dbgOn && dbgThisSlot
                 obj.printChainSnapshot("After HO/RLF", obj.ctx);
             end
@@ -180,6 +187,7 @@ classdef RanKernelNR
             % --------------------------------------------------
             [obj.phyModel, obj.ctx] = obj.phyModel.step(obj.ctx);
 
+            obj.trafficModel = obj.ctx.scenario.traffic.model;
             if dbgOn && dbgThisSlot
                 obj.printChainSnapshot("After PHY", obj.ctx);
             end
@@ -212,6 +220,100 @@ classdef RanKernelNR
                 obj.printFooter();
             end
 
+        end
+
+        function ctx = applySelectedUEPolicy(obj, ctx)
+
+            if ~isprop(ctx,'cfg') || isempty(ctx.cfg) || ~isfield(ctx.cfg,'ctrl')
+                return;
+            end
+
+            policy = "none";
+            if isfield(ctx.cfg.ctrl,'selectedUEPolicy')
+                policy = string(ctx.cfg.ctrl.selectedUEPolicy);
+            end
+
+            if policy == "none"
+                if obj.shouldPrintSelectedUEPolicy(ctx)
+                    fprintf('[DEBUG][slot=%d][selectedUEPolicy] policy=none\n', ctx.slot);
+                end
+                return;
+            end
+
+            if ~isprop(ctx,'ctrl') || ~isfield(ctx.ctrl,'selectedUE')
+                if obj.shouldPrintSelectedUEPolicy(ctx)
+                    fprintf('[DEBUG][slot=%d][selectedUEPolicy] missing ctrl.selectedUE\n', ctx.slot);
+                end
+                return;
+            end
+
+            % Respect external control when already set
+            if any(ctx.ctrl.selectedUE(:) > 0)
+                if obj.shouldPrintSelectedUEPolicy(ctx)
+                    fprintf('[DEBUG][slot=%d][selectedUEPolicy] external selectedUE present\n', ctx.slot);
+                end
+                return;
+            end
+
+            numCell = ctx.cfg.scenario.numCell;
+            numUE   = ctx.cfg.scenario.numUE;
+            sel = zeros(numCell,1);
+
+            if ~isprop(ctx,'servingCell') || isempty(ctx.servingCell)
+                if obj.shouldPrintSelectedUEPolicy(ctx)
+                    fprintf('[DEBUG][slot=%d][selectedUEPolicy] missing servingCell\n', ctx.slot);
+                end
+                return;
+            end
+
+            bestBitsPerCell = zeros(numCell,1);
+            if policy == "queueMax"
+                for c = 1:numCell
+                    ueSet = find(ctx.servingCell == c);
+                    if isempty(ueSet)
+                        continue;
+                    end
+
+                    bestU = 0;
+                    bestBits = -inf;
+
+                    for i = 1:numel(ueSet)
+                        u = ueSet(i);
+
+                        if isfield(ctx,'ueBlockedUntilSlot') && ctx.slot < ctx.ueBlockedUntilSlot(u)
+                            continue;
+                        end
+                        if isfield(ctx,'ueInOutageUntilSlot') && ctx.slot < ctx.ueInOutageUntilSlot(u)
+                            continue;
+                        end
+
+                        q = ctx.scenario.traffic.model.getQueue(u);
+                        if isempty(q)
+                            bits = 0;
+                        else
+                            bits = sum([q.size]);
+                        end
+
+                        if bits > bestBits
+                            bestBits = bits;
+                            bestU = u;
+                        end
+                    end
+
+                    bestBitsPerCell(c) = bestBits;
+
+                    if bestU >= 1 && bestU <= numUE && bestBits > 0
+                        sel(c) = bestU;
+                    end
+                end
+            end
+
+            ctx.ctrl.selectedUE = sel;
+
+            if obj.shouldPrintSelectedUEPolicy(ctx)
+                fprintf('[DEBUG][slot=%d][selectedUEPolicy] policy=%s sel=%s bestBits=%s\n', ...
+                    ctx.slot, policy, mat2str(sel(:).'), mat2str(bestBitsPerCell(:).'));
+            end
         end
 
         %% ===============================
@@ -248,6 +350,38 @@ classdef RanKernelNR
     % Debug helpers (private)
     %% =========================================================
     methods (Access = private)
+
+        function tf = shouldPrintSelectedUEPolicy(~, ctx)
+
+            tf = false;
+
+            if ~isprop(ctx,'cfg') || isempty(ctx.cfg) || ~isfield(ctx.cfg,'debug')
+                return;
+            end
+            if ~isfield(ctx.cfg.debug,'enable') || ~ctx.cfg.debug.enable
+                return;
+            end
+
+            every = 1;
+            if isfield(ctx.cfg.debug,'every') && isnumeric(ctx.cfg.debug.every) && ctx.cfg.debug.every >= 1
+                every = round(ctx.cfg.debug.every);
+            end
+            if mod(ctx.slot, every) ~= 0
+                return;
+            end
+
+            if isfield(ctx.cfg.debug,'modules')
+                try
+                    ms = string(ctx.cfg.debug.modules);
+                    if ~any(ms=="selectedUEPolicy") && ~any(ms=="all")
+                        return;
+                    end
+                catch
+                end
+            end
+
+            tf = true;
+        end
 
         function [dbgOn, dbgThisSlot] = debugGate(~, action, slotNow)
             dbgOn = false;
@@ -335,6 +469,25 @@ classdef RanKernelNR
             obj.ctx.tmp.debug.traffic.urgent_pkts = urgent;
             obj.ctx.tmp.debug.traffic.minDeadline_slot = mindl;
 
+            if isprop(obj.trafficModel,'lastDebugTrace') && ~isempty(obj.trafficModel.lastDebugTrace)
+                tr = obj.trafficModel.lastDebugTrace;
+                if isfield(tr,'arrivalTotal')
+                    obj.ctx.tmp.debug.traffic.arrivalTotal = tr.arrivalTotal;
+                end
+                if isfield(tr,'queueBits')
+                    obj.ctx.tmp.debug.traffic.queueBitsTotal = sum(tr.queueBits);
+                end
+                if isfield(tr,'queueLen')
+                    obj.ctx.tmp.debug.traffic.queueLenTotal = sum(tr.queueLen);
+                end
+                if isfield(tr,'dropThisSlot')
+                    obj.ctx.tmp.debug.traffic.dropThisSlot = tr.dropThisSlot;
+                end
+                if isfield(tr,'qosThisSlot')
+                    obj.ctx.tmp.debug.traffic.qosThisSlot = tr.qosThisSlot;
+                end
+            end
+
             if ~isfield(obj.ctx.tmp,'ue') || isempty(obj.ctx.tmp.ue)
                 obj.ctx.tmp.ue = struct();
             end
@@ -350,7 +503,7 @@ classdef RanKernelNR
                  "  t_s=" + string(double(ctx.slot)*double(ctx.dt)));
 
             % ctrl snapshot
-            if isfield(ctx,'ctrl') && ~isempty(ctx.ctrl)
+            if isprop(ctx,'ctrl') && ~isempty(ctx.ctrl)
                 if isfield(ctx.ctrl,'cellSleepState')
                     disp("ctrl.cellSleepState=" + mat2str(ctx.ctrl.cellSleepState(:).'));
                 end
@@ -362,6 +515,13 @@ classdef RanKernelNR
                 end
                 if isfield(ctx.ctrl,'basePowerScale')
                     disp("ctrl.basePowerScale=" + mat2str(ctx.ctrl.basePowerScale(:).'));
+                end
+                if isfield(ctx.ctrl,'interferenceCouplingFactor')
+                    disp("ctrl.interferenceCouplingFactor=" + string(ctx.ctrl.interferenceCouplingFactor));
+                end
+                if isfield(ctx.ctrl,'qosServicePriority')
+                    sp = ctx.ctrl.qosServicePriority;
+                    disp("ctrl.qosServicePriority=" + sprintf("eMBB=%.2f URLLC=%.2f mMTC=%.2f", sp.eMBB, sp.URLLC, sp.mMTC));
                 end
             end
 
@@ -395,6 +555,31 @@ classdef RanKernelNR
                 disp("kpi.energy_J_total=" + string(ctx.tmp.kpi.energy_J_total));
             end
 
+            if isfield(ctx.tmp,'qos')
+                if isfield(ctx.tmp.qos,'arrivedBits')
+                    disp("qos.arrivedBits=" + mat2str(ctx.tmp.qos.arrivedBits(:).'));
+                end
+                if isfield(ctx.tmp.qos,'servedBits')
+                    disp("qos.servedBits=" + mat2str(ctx.tmp.qos.servedBits(:).'));
+                end
+                if isfield(ctx.tmp.qos,'droppedBits')
+                    disp("qos.droppedBits=" + mat2str(ctx.tmp.qos.droppedBits(:).'));
+                end
+            end
+
+            if isfield(ctx.tmp,'debug') && isfield(ctx.tmp.debug,'traffic')
+                tr = ctx.tmp.debug.traffic;
+                if isfield(tr,'arrivalTotal')
+                    disp("traffic.arrivalTotal=" + mat2str(tr.arrivalTotal(:).'));
+                end
+                if isfield(tr,'queueBitsTotal')
+                    disp("traffic.queueBitsTotal=" + string(tr.queueBitsTotal));
+                end
+                if isfield(tr,'queueLenTotal')
+                    disp("traffic.queueLenTotal=" + string(tr.queueLenTotal));
+                end
+            end
+
             % broken-link hints
             if isfield(ctx.tmp,'debug')
                 if isfield(ctx.tmp.debug,'scheduler') && isfield(ctx.tmp.debug.scheduler,'selU_reason')
@@ -402,6 +587,55 @@ classdef RanKernelNR
                 end
             end
         end
+
+        function ctx = accumulateQosArrivals(~, ctx, trafficModel)
+
+            if ~isprop(trafficModel,'lastQosStatsThisSlot')
+                return;
+            end
+
+            s = trafficModel.getQosStats();
+
+            if isempty(ctx.accQosArrivedBits)
+                ctx.accQosArrivedBits = zeros(3,1);
+            end
+            if isempty(ctx.accQosDroppedBits)
+                ctx.accQosDroppedBits = zeros(3,1);
+            end
+            if isempty(ctx.accQosDroppedCount)
+                ctx.accQosDroppedCount = zeros(3,1);
+            end
+
+            ctx.accQosArrivedBits = ctx.accQosArrivedBits + s.arrivedBits;
+            ctx.accQosDroppedBits = ctx.accQosDroppedBits + s.droppedBits;
+            ctx.accQosDroppedCount = ctx.accQosDroppedCount + s.droppedCount;
+
+            if ~isfield(ctx.tmp,'qos')
+                ctx.tmp.qos = struct();
+            end
+            ctx.tmp.qos.arrivedBits = s.arrivedBits;
+            ctx.tmp.qos.droppedBits = s.droppedBits;
+            ctx.tmp.qos.droppedCount = s.droppedCount;
+        end
+
+        function ctx = accumulateQosServed(~, ctx, trafficModel)
+
+            if ~isprop(trafficModel,'lastQosStatsThisSlot')
+                return;
+            end
+
+            s = trafficModel.getQosStats();
+
+            if isempty(ctx.accQosServedBits)
+                ctx.accQosServedBits = zeros(3,1);
+            end
+
+            ctx.accQosServedBits = ctx.accQosServedBits + s.servedBits;
+
+            if ~isfield(ctx.tmp,'qos')
+                ctx.tmp.qos = struct();
+            end
+            ctx.tmp.qos.servedBits = s.servedBits;
+        end
     end
 end
-

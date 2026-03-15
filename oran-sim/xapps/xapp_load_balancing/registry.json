@@ -1,0 +1,23 @@
+{
+  "xapp_id": "xapp_load_balancing",
+  "version": "2.0.0",
+  "name": "Load Balancing xApp",
+
+  "description": "Improves fairness by prioritizing backlogged UEs when resource allocation becomes concentrated. It adjusts per-cell UE selection and UE weights based on queue pressure.",
+
+  "entry_point": "xapp_load_balancing",
+
+  "control_parameters": [
+    "scheduling.selectedUE",
+    "scheduling.weightUE"
+  ],
+
+  "affected_kpis": {
+    "maximize": [
+      "Fairness"
+    ],
+    "minimize": [
+      "Top10Share"
+    ]
+  }
+}

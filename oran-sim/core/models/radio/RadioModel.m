@@ -41,17 +41,17 @@ classdef RadioModel < handle
         % Coupling (relative competition)
         kTxExp   = 0.35
         kBwExp   = 0.8
-        kLoadExp = 1.5
-        edgeBoost = 1.5
+        kLoadExp = 1.8
+        edgeBoost = 1.8
 
         % Absolute leakage coupling (NEW)
         absLeakEnable = true
-        absLeakAlpha  = 0.35          % strength vs avg Tx shift
+        absLeakAlpha  = 0.45          % strength vs avg Tx shift
         absLeakRefTx_dBm = []         % baseline reference, auto init
 
         % SINR compression
-        sinrCompressThreshold_dB = 25
-        sinrCompressSlope = 0.6
+        sinrCompressThreshold_dB = 20
+        sinrCompressSlope = 0.45
 
         % Fading
         fastFadeSigmaLow_dB  = 1
@@ -173,6 +173,10 @@ classdef RadioModel < handle
 
             interfScale = txPart .* bwPart .* loadPart;
 
+            if isprop(ctx,'ctrl') && isfield(ctx.ctrl,'interferenceCouplingFactor')
+                interfScale = interfScale * ctx.ctrl.interferenceCouplingFactor;
+            end
+
             % NEW: absolute leakage so global TxOffset changes SINR
             absLeak = 1.0;
             if obj.absLeakEnable
@@ -231,6 +235,11 @@ classdef RadioModel < handle
 
                 % apply absolute leakage scaling
                 interfW = interfW * absLeak;
+
+                % apply extra coupling factor directly to interference power
+                if isprop(ctx,'ctrl') && isfield(ctx.ctrl,'interferenceCouplingFactor')
+                    interfW = interfW * ctx.ctrl.interferenceCouplingFactor;
+                end
 
                 sinrW = sigW / (interfW + noiseW(s) + 1e-15);
                 sinr = 10*log10(max(sinrW,1e-12));

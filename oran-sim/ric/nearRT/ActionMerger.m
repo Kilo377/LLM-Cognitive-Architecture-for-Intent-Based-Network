@@ -11,7 +11,6 @@ function final_action = ActionMerger(actions)
     final_action = struct();
 
     final_action.scheduling = struct();
-    final_action.power      = struct();
     final_action.sleep      = struct();
     final_action.handover   = struct();
     final_action.beam       = struct();
@@ -26,7 +25,7 @@ function final_action = ActionMerger(actions)
     end
 
     % 遍历所有 domain
-    domains = ["scheduling","radio","energy","power","sleep","handover","beam"];
+    domains = ["scheduling","radio","energy","sleep","handover","beam"];
 
     for d = domains
         final_action.(d) = mergeDomainWithMode(actions, d, mergeMode);

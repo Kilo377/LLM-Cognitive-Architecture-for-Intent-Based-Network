@@ -76,9 +76,46 @@ scenario.mobility.model = UEMobilityModel( ...
 %% =====================================================
 % 4. Traffic
 %% =====================================================
-scenario.traffic.model = TrafficModel( ...
+trafficArgs = { ...
     'numUE', numUE, ...
-    'slotDuration', cfg.sim.slotDuration );
+    'slotDuration', cfg.sim.slotDuration };
+
+if isfield(cfg,'debug')
+    trafficArgs = [trafficArgs, {'debugCfg', cfg.debug}]; %#ok<AGROW>
+end
+
+if isfield(cfg,'traffic')
+    if isfield(cfg.traffic,'enableBurst')
+        trafficArgs = [trafficArgs, {'enableBurst', cfg.traffic.enableBurst}]; %#ok<AGROW>
+    end
+    if isfield(cfg.traffic,'overloadFactor')
+        trafficArgs = [trafficArgs, {'overloadFactor', cfg.traffic.overloadFactor}]; %#ok<AGROW>
+    end
+    if isfield(cfg.traffic,'silentRatio')
+        trafficArgs = [trafficArgs, {'silentRatio', cfg.traffic.silentRatio}]; %#ok<AGROW>
+    end
+    if isfield(cfg.traffic,'heavyRatio')
+        trafficArgs = [trafficArgs, {'heavyRatio', cfg.traffic.heavyRatio}]; %#ok<AGROW>
+    end
+    if isfield(cfg.traffic,'heavyMultiplierE')
+        trafficArgs = [trafficArgs, {'heavyMultiplierE', cfg.traffic.heavyMultiplierE}]; %#ok<AGROW>
+    end
+    if isfield(cfg.traffic,'heavyMultiplierU')
+        trafficArgs = [trafficArgs, {'heavyMultiplierU', cfg.traffic.heavyMultiplierU}]; %#ok<AGROW>
+    end
+    if isfield(cfg.traffic,'heavyMultiplierM')
+        trafficArgs = [trafficArgs, {'heavyMultiplierM', cfg.traffic.heavyMultiplierM}]; %#ok<AGROW>
+    end
+    if isfield(cfg.traffic,'silentMultiplier')
+        trafficArgs = [trafficArgs, {'silentMultiplier', cfg.traffic.silentMultiplier}]; %#ok<AGROW>
+    end
+end
+
+scenario.traffic.model = TrafficModel(trafficArgs{:});
+
+if isfield(cfg,'traffic') && isfield(cfg.traffic,'profileRatio')
+    scenario.traffic.model = scenario.traffic.model.setProfileRatio(cfg.traffic.profileRatio);
+end
 
 %% ---------------- Hotspot reassignment ----------------
 if isfield(cfg,'traffic') && ...

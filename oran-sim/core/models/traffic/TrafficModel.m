@@ -68,8 +68,13 @@ classdef TrafficModel
 
         lastDebugTrace
 
+        debugCfg
+
         % ===== drop accounting =====
         lastDropThisSlot
+
+        lastQosStatsThisSlot
+        qosTypeList
 
         % ===== NEW: traffic class =====
         trafficClassPerUE           % 0=silent 1=normal 2=heavy
@@ -90,6 +95,7 @@ classdef TrafficModel
             addParameter(p,'slotDuration',1e-3);
             addParameter(p,'enableBurst',true);
             addParameter(p,'enableStats',true);
+            addParameter(p,'debugCfg',struct());
 
             % NEW knobs
             addParameter(p,'overloadFactor',1.25);      % >1 makes system slightly congested
@@ -105,6 +111,7 @@ classdef TrafficModel
             obj.slotDuration = p.Results.slotDuration;
             obj.enableBurst  = p.Results.enableBurst;
             obj.enableStats  = p.Results.enableStats;
+            obj.debugCfg     = p.Results.debugCfg;
 
             obj.overloadFactor = p.Results.overloadFactor;
 
@@ -221,6 +228,59 @@ classdef TrafficModel
             obj.lastDebugTrace=struct();
 
             obj.lastDropThisSlot = obj.makeEmptyDropSummary();
+            obj.qosTypeList = ["eMBB","URLLC","mMTC"];
+            obj.lastQosStatsThisSlot = obj.makeEmptyQosStats();
+        end
+
+        function obj = setProfileRatio(obj, ratio)
+
+            if isempty(ratio) || ~isstruct(ratio)
+                return;
+            end
+
+            rE = 0; rU = 0; rM = 0; rX = 0;
+            if isfield(ratio,'eMBB'), rE = max(0, ratio.eMBB); end
+            if isfield(ratio,'URLLC'), rU = max(0, ratio.URLLC); end
+            if isfield(ratio,'mMTC'), rM = max(0, ratio.mMTC); end
+            if isfield(ratio,'Mixed'), rX = max(0, ratio.Mixed); end
+
+            s = rE + rU + rM + rX;
+            if s <= 0
+                return;
+            end
+            if s > 1
+                rE = rE / s;
+                rU = rU / s;
+                rM = rM / s;
+                rX = rX / s;
+            end
+
+            rem = max(0, 1 - (rE + rU + rM + rX));
+            rX = rX + rem;
+
+            nE = round(obj.numUE * rE);
+            nU = round(obj.numUE * rU);
+            nM = round(obj.numUE * rM);
+            nX = max(0, obj.numUE - nE - nU - nM);
+
+            idx = randperm(obj.numUE);
+            obj.profileType = repmat("Mixed", obj.numUE,1);
+
+            if nE > 0
+                obj.profileType(idx(1:nE)) = "eMBB";
+            end
+            if nU > 0
+                obj.profileType(idx(nE+1:nE+nU)) = "URLLC";
+            end
+            if nM > 0
+                obj.profileType(idx(nE+nU+1:nE+nU+nM)) = "mMTC";
+            end
+            if nX > 0
+                obj.profileType(idx(nE+nU+nM+1:end)) = "Mixed";
+            end
+
+            obj = obj.refreshMixWeight();
+            obj = obj.refreshRateBoosts();
         end
 
         function obj = step(obj)
@@ -228,6 +288,9 @@ classdef TrafficModel
 
             obj.lastDropThisSlot = obj.makeEmptyDropSummary();
             obj.lastDropThisSlot.slot = obj.slotNow;
+
+            obj.lastQosStatsThisSlot = obj.makeEmptyQosStats();
+            obj.lastQosStatsThisSlot.slot = obj.slotNow;
 
             arrivalCount=zeros(obj.numUE,3);
 
@@ -268,22 +331,29 @@ classdef TrafficModel
                 for k=1:nE
                     sz=max(1e4,obj.embbPktMeanPerUE(u)+obj.embbPktSizeStd*randn());
                     pkt=obj.createPacket(u,sz,inf,"eMBB");
+                    obj = obj.countQosArrival(pkt);
                     obj=obj.enqueueQoS(u,pkt);
                 end
 
                 for k=1:nU
                     dl=obj.urllcDeadlinePerUE(u);
                     pkt=obj.createPacket(u,obj.urllcPktSize,dl,"URLLC");
+                    obj = obj.countQosArrival(pkt);
                     obj=obj.enqueueQoS(u,pkt);
                 end
 
                 for k=1:nM
                     pkt=obj.createPacket(u,obj.mmtcPktSize,obj.mmtcDeadlineBase,"mMTC");
+                    obj = obj.countQosArrival(pkt);
                     obj=obj.enqueueQoS(u,pkt);
                 end
             end
 
             obj=obj.writeDebugTrace(arrivalCount);
+
+            if obj.shouldPrintDebug()
+                obj.printDebug();
+            end
         end
 
         function obj = decreaseDeadline(obj)
@@ -316,13 +386,32 @@ classdef TrafficModel
         end
 
         function [obj,servedBits]=serve(obj,ueId,bits)
+            [obj, servedBits] = obj.serveWithPriority(ueId, bits, []);
+        end
+
+        function [obj,servedBits,servedQosBits]=serveWithPriority(obj,ueId,bits,qosPriority)
             servedBits=0;
+            servedQosBits = zeros(3,1);
             q=obj.queues{ueId};
+
+            if isempty(q)
+                return;
+            end
+
+            if nargin >= 4 && ~isempty(qosPriority)
+                q = obj.sortQueueByPriority(q, qosPriority);
+            end
+
             while bits>0 && ~isempty(q)
                 take=min(bits,q(1).size);
                 q(1).size=q(1).size-take;
                 servedBits=servedBits+take;
                 bits=bits-take;
+
+                idx = obj.qosTypeToIndex(q(1).type);
+                servedQosBits(idx) = servedQosBits(idx) + take;
+                obj = obj.countQosServed(q(1).type, take);
+
                 if q(1).size<=0
                     q(1)=[];
                 end
@@ -333,9 +422,30 @@ classdef TrafficModel
         function q=getQueue(obj,ueId)
             q=obj.queues{ueId};
         end
+
+        function s = getQosStats(obj)
+            s = obj.lastQosStatsThisSlot;
+        end
     end
 
     methods (Access=private)
+
+        function obj = refreshRateBoosts(obj)
+            obj.urllcRateBoostPerUE = ones(obj.numUE,1);
+            obj.embbRateBoostPerUE  = ones(obj.numUE,1);
+            obj.mmtcRateBoostPerUE  = ones(obj.numUE,1);
+
+            for u=1:obj.numUE
+                t=obj.profileType(u);
+                if t=="URLLC"
+                    obj.urllcRateBoostPerUE(u)=2.5;
+                elseif t=="eMBB"
+                    obj.embbRateBoostPerUE(u)=2.0;
+                elseif t=="mMTC"
+                    obj.mmtcRateBoostPerUE(u)=3.0;
+                end
+            end
+        end
 
         function [obj, gate] = burstGate(obj, u, streamIdx)
             gate = 1;
@@ -361,6 +471,15 @@ classdef TrafficModel
                 'countURLLC',0,'bitsURLLC',0, ...
                 'countOverflow',0,'bitsOverflow',0, ...
                 'countExpired',0,'bitsExpired',0 );
+        end
+
+        function s = makeEmptyQosStats(~)
+            s = struct();
+            s.slot = 0;
+            s.arrivedBits = zeros(3,1);
+            s.servedBits  = zeros(3,1);
+            s.droppedBits = zeros(3,1);
+            s.droppedCount = zeros(3,1);
         end
 
         function obj=refreshMixWeight(obj)
@@ -438,6 +557,77 @@ classdef TrafficModel
                 obj.lastDropThisSlot.countExpired = obj.lastDropThisSlot.countExpired + cnt;
                 obj.lastDropThisSlot.bitsExpired  = obj.lastDropThisSlot.bitsExpired  + bits;
             end
+
+            for i = 1:numel(pkts)
+                obj = obj.countQosDrop(pkts(i));
+            end
+        end
+
+        function obj = countQosArrival(obj, pkt)
+            idx = obj.qosTypeToIndex(pkt.type);
+            obj.lastQosStatsThisSlot.arrivedBits(idx) = ...
+                obj.lastQosStatsThisSlot.arrivedBits(idx) + pkt.size;
+        end
+
+        function obj = countQosDrop(obj, pkt)
+            idx = obj.qosTypeToIndex(pkt.type);
+            obj.lastQosStatsThisSlot.droppedBits(idx) = ...
+                obj.lastQosStatsThisSlot.droppedBits(idx) + pkt.size;
+            obj.lastQosStatsThisSlot.droppedCount(idx) = ...
+                obj.lastQosStatsThisSlot.droppedCount(idx) + 1;
+        end
+
+        function obj = countQosServed(obj, typeStr, bits)
+            idx = obj.qosTypeToIndex(typeStr);
+            obj.lastQosStatsThisSlot.servedBits(idx) = ...
+                obj.lastQosStatsThisSlot.servedBits(idx) + bits;
+        end
+
+        function idx = qosTypeToIndex(obj, typeStr)
+            t = string(typeStr);
+            if t == "URLLC"
+                idx = 2;
+            elseif t == "mMTC"
+                idx = 3;
+            else
+                idx = 1;
+            end
+        end
+
+        function q = sortQueueByPriority(~, q, qosPriority)
+            if isempty(q)
+                return;
+            end
+
+            wE = qosPriority.eMBB;
+            wU = qosPriority.URLLC;
+            wM = qosPriority.mMTC;
+
+            weights = zeros(numel(q),1);
+            deadlines = zeros(numel(q),1);
+            ages = zeros(numel(q),1);
+
+            for i = 1:numel(q)
+                t = string(q(i).type);
+                if t == "URLLC"
+                    weights(i) = wU;
+                elseif t == "mMTC"
+                    weights(i) = wM;
+                else
+                    weights(i) = wE;
+                end
+
+                d = q(i).deadline;
+                if ~isfinite(d)
+                    d = 1e9;
+                end
+                deadlines(i) = d;
+                ages(i) = q(i).age;
+            end
+
+            keys = [-weights, deadlines, -ages];
+            [~, idx] = sortrows(keys, [1 2 3]);
+            q = q(idx);
         end
 
         function obj=writeDebugTrace(obj,arrivalCount)
@@ -457,6 +647,7 @@ classdef TrafficModel
             end
 
             tr.dropThisSlot = obj.lastDropThisSlot;
+            tr.qosThisSlot = obj.lastQosStatsThisSlot;
 
             % NEW: class stats
             tr.class = struct();
@@ -465,6 +656,53 @@ classdef TrafficModel
             tr.class.countHeavy  = sum(obj.trafficClassPerUE==2);
 
             obj.lastDebugTrace=tr;
+        end
+
+        function tf = shouldPrintDebug(obj)
+            tf = false;
+
+            if isempty(obj.lastDebugTrace)
+                return;
+            end
+
+            cfg = obj.debugCfg;
+            if isempty(cfg) || ~isstruct(cfg)
+                return;
+            end
+
+            if ~isfield(cfg,'enable') || ~cfg.enable
+                return;
+            end
+
+            every = 1;
+            if isfield(cfg,'every') && isnumeric(cfg.every) && cfg.every >= 1
+                every = round(cfg.every);
+            end
+            if mod(obj.slotNow, every) ~= 0
+                return;
+            end
+
+            if isfield(cfg,'modules')
+                try
+                    ms = string(cfg.modules);
+                    if ~any(ms=="traffic") && ~any(ms=="all")
+                        return;
+                    end
+                catch
+                end
+            end
+
+            tf = true;
+        end
+
+        function printDebug(obj)
+            tr = obj.lastDebugTrace;
+            if isempty(tr) || ~isfield(tr,'slot')
+                return;
+            end
+            fprintf('[DEBUG][slot=%d][traffic] arrived=[%.0f %.0f %.0f] queueBits=%.0f queueLen=%.0f\n', ...
+                tr.slot, tr.arrivalTotal(1), tr.arrivalTotal(2), tr.arrivalTotal(3), ...
+                sum(tr.queueBits), sum(tr.queueLen));
         end
 
         function s=initStats(~)

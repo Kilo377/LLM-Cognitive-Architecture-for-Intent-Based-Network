@@ -17,6 +17,7 @@ from policy_orchestration import (
     write_policy,
     default_policy_path,
 )
+from baseline_reasoning import run_reasoning
 from llm.api_manager import APIManager
 
 
@@ -218,12 +219,11 @@ def main(ran_intent: str) -> None:
     if args.print_report:
         print_report(report)
 
-    intent = get_intent_text(ran_intent)
+    intent = get_intent_text(None)
 
-    prompt = build_prompt(intent, report, report.get("xappPool", []))
-    api = APIManager(provider_name=args.provider)
-    response = api.generate(prompt, model=args.model)
-    parsed = parse_policy(response)
+    parsed = run_reasoning(
+        intent, report, report.get("xappPool", []), args.provider, args.model
+    )
     policy = parsed.get("policy", {"enabledXApps": []})
     reasoning = parsed.get("reasoning", "")
 
@@ -237,5 +237,4 @@ def main(ran_intent: str) -> None:
 
 
 if __name__ == "__main__":
-    ran_intent = "提升连接稳定性"
-    main(ran_intent)
+    main("")

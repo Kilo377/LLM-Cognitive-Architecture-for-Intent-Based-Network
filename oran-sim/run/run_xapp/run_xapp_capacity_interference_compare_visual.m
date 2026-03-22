@@ -1,4 +1,4 @@
-function run_xapp_fairness_efficiency_conflict_visual()
+function run_xapp_capacity_interference_compare_visual()
 
     if exist('setup_path','file') ~= 2
         runDir = fileparts(mfilename('fullpath'));
@@ -13,13 +13,11 @@ function run_xapp_fairness_efficiency_conflict_visual()
     cfg.sim.slotPerEpisode = 250;
     cfg.nearRT.xappRoot = fullfile(rootDir, "xapps");
 
-    fixedInterf = 6.0;
-
     cases = {
         "baseline", [];
-        "load_balancing_only", ["xapp_load_balancing"];
-        "efficiency_only", ["xapp_throughput_efficiency"];
-        "load_plus_efficiency", ["xapp_load_balancing", "xapp_throughput_efficiency"]
+        "capacity_only", ["xapp_capacity_booster"];
+        "interference_only", ["xapp_interference_mitigator"];
+        "capacity_plus_interference", ["xapp_capacity_booster", "xapp_interference_mitigator"]
     };
 
     results = struct();
@@ -28,13 +26,11 @@ function run_xapp_fairness_efficiency_conflict_visual()
         name = cases{ci,1};
         xset = cases{ci,2};
 
-        fprintf("\n=== xApp Fairness/Efficiency Case: %s ===\n", name);
+        fprintf("\n=== xApp Compare Case: %s ===\n", name);
 
         scenario = ScenarioBuilder(cfg);
         kernel   = RanKernelNR(cfg, scenario);
         ric      = NearRTRIC(cfg, "xappSet", xset);
-
-        kernel.ctx.ctrl.interferenceCouplingFactor = fixedInterf;
 
         for s = 1:cfg.sim.slotPerEpisode
             state = kernel.ctx.state;
@@ -45,7 +41,7 @@ function run_xapp_fairness_efficiency_conflict_visual()
         results.(name) = summarizeKpi(kernel.ctx.tmp.kpi);
     end
 
-    printSummary(results, fixedInterf);
+    printSummary(results);
     plotSummary(results, cases(:,1));
 end
 
@@ -77,32 +73,25 @@ function out = summarizeKpi(kpi)
     out.throughput_Mbps = kpi.capacity.throughput_Mbps_total;
     out.dropRatio = kpi.reliability.dropRatio;
     out.meanBLER = kpi.reliability.meanBLER;
-    out.jainFairness = kpi.capacity.jainFairness;
-    out.top10Share = kpi.capacity.top10Share;
+    out.prbUtilMean = kpi.resource.prbUtilMean;
+    out.congestionIndex = kpi.system.congestionIndex;
+    out.energy_J_total = kpi.efficiency.energy_J_total;
     out.bitPerJ = kpi.efficiency.bitPerJ;
-
-    if isfield(kpi,'phy')
-        out.p10SINR_dB = kpi.phy.p10SINR_dB;
-        out.p50SINR_dB = kpi.phy.p50SINR_dB;
-    else
-        out.p10SINR_dB = 0;
-        out.p50SINR_dB = 0;
-    end
+    out.meanInterference_dBm = kpi.resource.meanInterference_dBm;
 end
 
-function printSummary(results, fixedInterf)
+function printSummary(results)
 
     names = fieldnames(results);
 
-    fprintf("\n===== xApp Fairness/Efficiency KPI Summary =====\n");
-    fprintf("Fixed: interferenceCouplingFactor=%.2f\n", fixedInterf);
-    fprintf("Case                          Thr(Mbps)  DropRatio  BLER     Jain     Top10   p10SINR  p50SINR  Bit/J\n");
+    fprintf("\n===== xApp Capacity/Interference KPI Summary =====\n");
+    fprintf("Case                    Thr(Mbps)  DropRatio  BLER     PRButil  CongIdx  Bit/J    Energy(J)  Interf(dBm)\n");
 
     for i = 1:numel(names)
         r = results.(names{i});
-        fprintf("%-28s %9.2f  %8.4f  %7.4f  %7.3f  %7.3f  %7.2f  %7.2f  %7.1f\n", ...
+        fprintf("%-22s %9.2f  %8.4f  %7.4f  %7.3f  %7.3f  %7.1f  %9.1f  %10.2f\n", ...
             names{i}, r.throughput_Mbps, r.dropRatio, r.meanBLER, ...
-            r.jainFairness, r.top10Share, r.p10SINR_dB, r.p50SINR_dB, r.bitPerJ);
+            r.prbUtilMean, r.congestionIndex, r.bitPerJ, r.energy_J_total, r.meanInterference_dBm);
     end
 end
 
@@ -110,49 +99,41 @@ function plotSummary(results, caseNames)
 
     n = numel(caseNames);
     thr = zeros(n,1);
-    jain = zeros(n,1);
-    top10 = zeros(n,1);
-    bler = zeros(n,1);
     drop = zeros(n,1);
+    bler = zeros(n,1);
+    interf = zeros(n,1);
 
     for i = 1:n
         r = results.(caseNames{i});
         thr(i) = r.throughput_Mbps;
-        jain(i) = r.jainFairness;
-        top10(i) = r.top10Share;
-        bler(i) = r.meanBLER;
         drop(i) = r.dropRatio;
+        bler(i) = r.meanBLER;
+        interf(i) = r.meanInterference_dBm;
     end
 
-    figure('Name','xApp Fairness/Efficiency Conflict');
+    figure('Name','xApp Capacity/Interference Compare');
 
-    subplot(2,3,1);
+    subplot(2,2,1);
     bar(thr);
     title('Throughput (Mbps)');
     grid on;
     set(gca,'XTickLabel',caseNames);
 
-    subplot(2,3,2);
-    bar(jain);
-    title('Jain Fairness');
-    grid on;
-    set(gca,'XTickLabel',caseNames);
-
-    subplot(2,3,3);
-    bar(top10);
-    title('Top10 Share');
-    grid on;
-    set(gca,'XTickLabel',caseNames);
-
-    subplot(2,3,4);
-    bar(bler);
-    title('BLER');
-    grid on;
-    set(gca,'XTickLabel',caseNames);
-
-    subplot(2,3,5);
+    subplot(2,2,2);
     bar(drop);
     title('Drop Ratio');
+    grid on;
+    set(gca,'XTickLabel',caseNames);
+
+    subplot(2,2,3);
+    bar(bler);
+    title('Mean BLER');
+    grid on;
+    set(gca,'XTickLabel',caseNames);
+
+    subplot(2,2,4);
+    bar(interf);
+    title('Mean Interference (dBm)');
     grid on;
     set(gca,'XTickLabel',caseNames);
 end

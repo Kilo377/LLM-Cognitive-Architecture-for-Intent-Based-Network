@@ -1,0 +1,26 @@
+{
+  "xapp_id": "xapp_throughput_booster",
+  "version": "1.0.0",
+  "name": "Throughput Booster xApp",
+
+  "description": "Maximizes throughput by always selecting the best instantaneous link per cell and enabling adaptive beam mode. This can reduce fairness by favoring strong links.",
+
+  "entry_point": "xapp_throughput_booster",
+
+  "control_parameters": [
+    "scheduling.selectedUE",
+    "beam.mode"
+  ],
+
+  "affected_kpis": {
+    "maximize": [
+      "Throughput"
+    ],
+    "may_decrease": [
+      "Fairness"
+    ],
+    "may_increase": [
+      "Top10Share"
+    ]
+  }
+}

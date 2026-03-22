@@ -1,4 +1,4 @@
-function run_xapp_capacity_energy_compare_visual()
+function run_xapp_handover_stability_compare_visual()
 
     if exist('setup_path','file') ~= 2
         runDir = fileparts(mfilename('fullpath'));
@@ -8,16 +8,15 @@ function run_xapp_capacity_energy_compare_visual()
     rootDir = setup_path();
 
     cfg = default_config();
-    cfg = applyHighLoad(cfg);
     cfg.debug.enable = false;
-    cfg.sim.slotPerEpisode = 250;
+    cfg.sim.slotPerEpisode = 300;
     cfg.nearRT.xappRoot = fullfile(rootDir, "xapps");
 
     cases = {
         "baseline", [];
-        "capacity_only", ["xapp_capacity_boost"];
-        "energy_only", ["xapp_energy_saver"];
-        "capacity_plus_energy", ["xapp_capacity_boost", "xapp_energy_saver"]
+        "mobility_only", ["xapp_mobility_balancer"];
+        "stability_only", ["xapp_stability_guard"];
+        "mobility_plus_stability", ["xapp_mobility_balancer", "xapp_stability_guard"]
     };
 
     results = struct();
@@ -45,94 +44,79 @@ function run_xapp_capacity_energy_compare_visual()
     plotSummary(results, cases(:,1));
 end
 
-function cfg = applyHighLoad(cfg)
-
-    cfg.scenario.numUE = max(60, cfg.scenario.numUE);
-
-    if ~isfield(cfg,'traffic')
-        cfg.traffic = struct();
-    end
-
-    cfg.traffic.overloadFactor = 2.0;
-    cfg.traffic.silentRatio = 0.05;
-    cfg.traffic.heavyRatio  = 0.35;
-    cfg.traffic.heavyMultiplierE = 8.0;
-    cfg.traffic.heavyMultiplierU = 3.5;
-    cfg.traffic.heavyMultiplierM = 4.0;
-    cfg.traffic.enableBurst = true;
-
-    cfg.traffic.hotspot.enable = true;
-    cfg.traffic.hotspot.cellId = 1;
-    cfg.traffic.hotspot.heavyRatioInHot = 0.75;
-    cfg.traffic.hotspot.heavyRatioOutHot = 0.10;
-end
-
 function out = summarizeKpi(kpi)
 
     out = struct();
     out.throughput_Mbps = kpi.capacity.throughput_Mbps_total;
     out.dropRatio = kpi.reliability.dropRatio;
     out.meanBLER = kpi.reliability.meanBLER;
-    out.prbUtilMean = kpi.resource.prbUtilMean;
-    out.congestionIndex = kpi.system.congestionIndex;
-    out.energy_J_total = kpi.efficiency.energy_J_total;
-    out.bitPerJ = kpi.efficiency.bitPerJ;
+    out.handoverCount = kpi.stability.handoverCount;
+    out.pingPongCount = kpi.stability.pingPongCount;
+    out.rlfCount = kpi.reliability.rlfCount;
 end
 
 function printSummary(results)
 
     names = fieldnames(results);
 
-    fprintf("\n===== xApp Capacity/Energy KPI Summary =====\n");
-    fprintf("Case                    Thr(Mbps)  DropRatio  BLER     PRButil  CongIdx  Bit/J    Energy(J)\n");
+    fprintf("\n===== xApp Handover/Stability KPI Summary =====\n");
+    fprintf("Case                    Thr(Mbps)  DropRatio  BLER     HOcnt  PingPong  RLF\n");
 
     for i = 1:numel(names)
         r = results.(names{i});
-        fprintf("%-22s %9.2f  %8.4f  %7.4f  %7.3f  %7.3f  %7.1f  %9.1f\n", ...
+        fprintf("%-22s %9.2f  %8.4f  %7.4f  %5d  %8d  %3d\n", ...
             names{i}, r.throughput_Mbps, r.dropRatio, r.meanBLER, ...
-            r.prbUtilMean, r.congestionIndex, r.bitPerJ, r.energy_J_total);
+            r.handoverCount, r.pingPongCount, r.rlfCount);
     end
 end
 
 function plotSummary(results, caseNames)
 
     n = numel(caseNames);
+    ho = zeros(n,1);
+    pp = zeros(n,1);
+    rlf = zeros(n,1);
     thr = zeros(n,1);
     drop = zeros(n,1);
-    bitj = zeros(n,1);
-    energy = zeros(n,1);
 
     for i = 1:n
         r = results.(caseNames{i});
+        ho(i) = r.handoverCount;
+        pp(i) = r.pingPongCount;
+        rlf(i) = r.rlfCount;
         thr(i) = r.throughput_Mbps;
         drop(i) = r.dropRatio;
-        bitj(i) = r.bitPerJ;
-        energy(i) = r.energy_J_total;
     end
 
-    figure('Name','xApp Capacity/Energy Compare');
+    figure('Name','xApp Handover/Stability Compare');
 
-    subplot(2,2,1);
+    subplot(2,3,1);
+    bar(ho);
+    title('Handover Count');
+    grid on;
+    set(gca,'XTickLabel',caseNames);
+
+    subplot(2,3,2);
+    bar(pp);
+    title('Ping-Pong Count');
+    grid on;
+    set(gca,'XTickLabel',caseNames);
+
+    subplot(2,3,3);
+    bar(rlf);
+    title('RLF Count');
+    grid on;
+    set(gca,'XTickLabel',caseNames);
+
+    subplot(2,3,4);
     bar(thr);
     title('Throughput (Mbps)');
     grid on;
     set(gca,'XTickLabel',caseNames);
 
-    subplot(2,2,2);
+    subplot(2,3,5);
     bar(drop);
     title('Drop Ratio');
-    grid on;
-    set(gca,'XTickLabel',caseNames);
-
-    subplot(2,2,3);
-    bar(bitj);
-    title('Bit/J');
-    grid on;
-    set(gca,'XTickLabel',caseNames);
-
-    subplot(2,2,4);
-    bar(energy);
-    title('Energy (J)');
     grid on;
     set(gca,'XTickLabel',caseNames);
 end

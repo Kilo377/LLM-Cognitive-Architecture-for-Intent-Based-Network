@@ -31,7 +31,7 @@ function [mergedXApps, conflicts] = policy_mitigation_a1(policies)
         end
 
         if isfield(p,'enabledXApps')
-            mergedXApps = [mergedXApps; string(p.enabledXApps(:))]; %#ok<AGROW>
+            mergedXApps = [mergedXApps; normalizeStringList(p.enabledXApps)]; %#ok<AGROW>
         end
     end
 
@@ -60,10 +60,10 @@ function [mergedXApps, conflicts] = policy_mitigation_a1(policies)
             kpiA = string.empty(1,0);
             kpiB = string.empty(1,0);
             if isfield(pa,'kpi_focus')
-                kpiA = string(pa.kpi_focus(:));
+                kpiA = normalizeStringList(pa.kpi_focus);
             end
             if isfield(pb,'kpi_focus')
-                kpiB = string(pb.kpi_focus(:));
+                kpiB = normalizeStringList(pb.kpi_focus);
             end
             kpiOverlap = intersect(kpiA, kpiB);
             if ~isempty(kpiOverlap)
@@ -78,10 +78,10 @@ function [mergedXApps, conflicts] = policy_mitigation_a1(policies)
             xA = string.empty(1,0);
             xB = string.empty(1,0);
             if isfield(pa,'enabledXApps')
-                xA = string(pa.enabledXApps(:));
+                xA = normalizeStringList(pa.enabledXApps);
             end
             if isfield(pb,'enabledXApps')
-                xB = string(pb.enabledXApps(:));
+                xB = normalizeStringList(pb.enabledXApps);
             end
             xOverlap = intersect(xA, xB);
             if ~isempty(xOverlap)
@@ -105,4 +105,24 @@ function pid = getPolicyId(p, fallback)
     else
         pid = "policy_" + string(fallback);
     end
+end
+
+function out = normalizeStringList(value)
+
+    if isstring(value)
+        out = value(:);
+        return;
+    end
+
+    if ischar(value)
+        out = string(value);
+        return;
+    end
+
+    if iscell(value)
+        out = string(value(:));
+        return;
+    end
+
+    out = string.empty(1,0);
 end

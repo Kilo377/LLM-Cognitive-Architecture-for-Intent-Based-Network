@@ -237,5 +237,5 @@ def main(ran_intent: str) -> None:
 
 
 if __name__ == "__main__":
-    ran_intent = "在保证可靠性的前提下提升吞吐"
+    ran_intent = "打开所有xapp"
     main(ran_intent)

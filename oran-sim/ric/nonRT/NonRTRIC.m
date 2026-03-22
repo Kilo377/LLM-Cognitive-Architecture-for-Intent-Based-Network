@@ -236,13 +236,13 @@ classdef NonRTRIC
 
             newEntry = struct();
             newEntry.policy_id = "policy_" + string(report.meta.slot);
-            newEntry.enabledXApps = string(newPolicy.enabledXApps(:));
+            newEntry.enabledXApps = obj.normalizeStringList(newPolicy.enabledXApps);
             newEntry.kpi_focus = string.empty(1,0);
             newEntry.status = "active";
             newEntry.created_at = string(report.meta.generatedAt);
 
             if isfield(newPolicy,'kpi_focus')
-                newEntry.kpi_focus = string(newPolicy.kpi_focus(:));
+                newEntry.kpi_focus = obj.normalizeStringList(newPolicy.kpi_focus);
             end
 
             policies = [policies; newEntry]; %#ok<AGROW>
@@ -361,7 +361,7 @@ classdef NonRTRIC
             end
         end
 
-        function [policy, valid] = normalizePolicy(~, policy)
+        function [policy, valid] = normalizePolicy(obj, policy)
 
             valid = false;
 
@@ -373,7 +373,7 @@ classdef NonRTRIC
                 return;
             end
 
-            policy.enabledXApps = string(policy.enabledXApps);
+            policy.enabledXApps = obj.normalizeStringList(policy.enabledXApps);
             valid = true;
         end
 
@@ -556,6 +556,26 @@ classdef NonRTRIC
 
             d = datetime('now','TimeZone','UTC','Format','yyyy-MM-dd''T''HH:mm:ss''Z''');
             ts = char(d);
+        end
+
+        function out = normalizeStringList(~, value)
+
+            if isstring(value)
+                out = value(:);
+                return;
+            end
+
+            if ischar(value)
+                out = string(value);
+                return;
+            end
+
+            if iscell(value)
+                out = string(value(:));
+                return;
+            end
+
+            out = string.empty(1,0);
         end
 
         function p = resolvePath(obj, p)

@@ -132,6 +132,11 @@ classdef ActionApplierModel
             if obj.shouldPrint(ctx)
                 obj.printDebug(ctx);
             end
+
+            if hasAction && isfield(action,'handover') && obj.shouldPrint(ctx)
+                fprintf('[DEBUG][slot=%d][actionApplier] ho.hystOffMean=%.2f ho.tttOffMean=%.2f\n', ...
+                    ctx.slot, mean(ctx.ctrl.hysteresisOffset_dB), mean(ctx.ctrl.tttOffset_slot));
+            end
         end
     end
 

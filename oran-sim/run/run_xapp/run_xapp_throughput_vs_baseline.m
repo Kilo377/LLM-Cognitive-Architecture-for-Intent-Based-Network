@@ -1,4 +1,4 @@
-function run_xapp_throughput_fairness_compare_visual()
+function run_xapp_throughput_vs_baseline()
 
     if exist('setup_path','file') ~= 2
         runDir = fileparts(mfilename('fullpath'));
@@ -8,16 +8,13 @@ function run_xapp_throughput_fairness_compare_visual()
     rootDir = setup_path();
 
     cfg = default_config();
-    cfg = applyHighLoad(cfg);
     cfg.debug.enable = false;
     cfg.sim.slotPerEpisode = 2000;
     cfg.nearRT.xappRoot = fullfile(rootDir, "xapps");
 
     cases = {
         "baseline", [];
-        "throughput_only", ["xapp_throughput_maximizer"];
-        "fairness_only", ["xapp_fairness_scheduler"];
-        "throughput_plus_fairness", ["xapp_throughput_maximizer", "xapp_fairness_scheduler"]
+        "throughput_only", ["xapp_throughput_maximizer"]
     };
 
     results = struct();
@@ -36,6 +33,10 @@ function run_xapp_throughput_fairness_compare_visual()
             state = kernel.ctx.state;
             [ric, action, ~] = ric.step(state);
             kernel = kernel.step(action);
+
+            if mod(s, 200) == 0
+                fprintf('[progress][%s] slot=%d/%d\n', name, s, cfg.sim.slotPerEpisode);
+            end
         end
 
         results.(name) = summarizeKpi(kernel.ctx.tmp.kpi);
@@ -45,49 +46,29 @@ function run_xapp_throughput_fairness_compare_visual()
     plotSummary(results, cases(:,1));
 end
 
-function cfg = applyHighLoad(cfg)
-
-    cfg.scenario.numUE = max(80, cfg.scenario.numUE);
-
-    if ~isfield(cfg,'traffic')
-        cfg.traffic = struct();
-    end
-
-    cfg.traffic.overloadFactor = 2.5;
-    cfg.traffic.silentRatio = 0.05;
-    cfg.traffic.heavyRatio  = 0.40;
-    cfg.traffic.heavyMultiplierE = 10.0;
-    cfg.traffic.heavyMultiplierU = 4.0;
-    cfg.traffic.heavyMultiplierM = 5.0;
-    cfg.traffic.enableBurst = true;
-
-    cfg.traffic.hotspot.enable = true;
-    cfg.traffic.hotspot.cellId = 1;
-    cfg.traffic.hotspot.heavyRatioInHot = 0.85;
-    cfg.traffic.hotspot.heavyRatioOutHot = 0.05;
-end
-
 function out = summarizeKpi(kpi)
 
     out = struct();
     out.throughput_Mbps = kpi.capacity.throughput_Mbps_total;
-    out.fairness = kpi.capacity.jainFairness;
-    out.top10Share = kpi.capacity.top10Share;
     out.dropRatio = kpi.reliability.dropRatio;
     out.meanBLER = kpi.reliability.meanBLER;
+    out.handoverCount = kpi.stability.handoverCount;
+    out.pingPongCount = kpi.stability.pingPongCount;
+    out.rlfCount = kpi.reliability.rlfCount;
 end
 
 function printSummary(results)
 
     names = fieldnames(results);
 
-    fprintf("\n===== xApp Throughput/Fairness KPI Summary =====\n");
-    fprintf("Case                    Thr(Mbps)  Fairness  Top10Share  DropRatio  BLER\n");
+    fprintf("\n===== xApp Throughput Maximizer vs Baseline KPI Summary =====\n");
+    fprintf("Case                    Thr(Mbps)  DropRatio  BLER     HOcnt  PingPong  RLF\n");
 
     for i = 1:numel(names)
         r = results.(names{i});
-        fprintf("%-22s %9.2f  %8.3f  %9.3f  %8.4f  %7.4f\n", ...
-            names{i}, r.throughput_Mbps, r.fairness, r.top10Share, r.dropRatio, r.meanBLER);
+        fprintf("%-22s %9.2f  %8.4f  %7.4f  %5d  %8d  %3d\n", ...
+            names{i}, r.throughput_Mbps, r.dropRatio, r.meanBLER, ...
+            r.handoverCount, r.pingPongCount, r.rlfCount);
     end
 end
 
@@ -95,39 +76,23 @@ function plotSummary(results, caseNames)
 
     n = numel(caseNames);
     thr = zeros(n,1);
-    fair = zeros(n,1);
-    top10 = zeros(n,1);
     drop = zeros(n,1);
 
     for i = 1:n
         r = results.(caseNames{i});
         thr(i) = r.throughput_Mbps;
-        fair(i) = r.fairness;
-        top10(i) = r.top10Share;
         drop(i) = r.dropRatio;
     end
 
-    figure('Name','xApp Throughput/Fairness Compare');
+    figure('Name','xApp Throughput Maximizer vs Baseline');
 
-    subplot(2,2,1);
+    subplot(1,2,1);
     bar(thr);
     title('Throughput (Mbps)');
     grid on;
     set(gca,'XTickLabel',caseNames);
 
-    subplot(2,2,2);
-    bar(fair);
-    title('Jain Fairness');
-    grid on;
-    set(gca,'XTickLabel',caseNames);
-
-    subplot(2,2,3);
-    bar(top10);
-    title('Top10 Share');
-    grid on;
-    set(gca,'XTickLabel',caseNames);
-
-    subplot(2,2,4);
+    subplot(1,2,2);
     bar(drop);
     title('Drop Ratio');
     grid on;

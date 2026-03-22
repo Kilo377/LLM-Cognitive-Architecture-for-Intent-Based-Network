@@ -86,6 +86,31 @@ classdef TrafficModel
         rateMulM_perClass
 
         overloadFactor              % global multiplier (mild congestion tuning)
+
+        % ===== dynamic traffic =====
+        dynamics
+        baseOverloadFactor
+        baseOverloadFactor0
+        baseRateMulE_perClass
+        baseRateMulU_perClass
+        baseRateMulM_perClass
+        baseRateMulE_perClass0
+        baseRateMulU_perClass0
+        baseRateMulM_perClass0
+        baseMeanOnSlot
+        baseMeanOffSlot
+        baseMeanOnSlot0
+        baseMeanOffSlot0
+
+        % ===== trend (slow drift) =====
+        trend
+        trendScaleOverload = 1.0
+        trendScaleHeavy = 1.0
+        trendScaleBurstOn = 1.0
+        trendScaleBurstOff = 1.0
+        activeUEMask
+        activationOrder
+        lastTrend
     end
 
     methods
@@ -96,6 +121,8 @@ classdef TrafficModel
             addParameter(p,'enableBurst',true);
             addParameter(p,'enableStats',true);
             addParameter(p,'debugCfg',struct());
+            addParameter(p,'dynamicCfg',struct());
+            addParameter(p,'trendCfg',struct());
 
             % NEW knobs
             addParameter(p,'overloadFactor',1.25);      % >1 makes system slightly congested
@@ -114,6 +141,8 @@ classdef TrafficModel
             obj.debugCfg     = p.Results.debugCfg;
 
             obj.overloadFactor = p.Results.overloadFactor;
+            obj.baseOverloadFactor0 = obj.overloadFactor;
+            obj.baseOverloadFactor = obj.overloadFactor;
 
             obj.slotNow = 0;
 
@@ -209,6 +238,14 @@ classdef TrafficModel
             obj.rateMulU_perClass = [silentMul, 1.0, heavyMulU];
             obj.rateMulM_perClass = [silentMul, 1.0, heavyMulM];
 
+            obj.baseRateMulE_perClass = obj.rateMulE_perClass;
+            obj.baseRateMulU_perClass = obj.rateMulU_perClass;
+            obj.baseRateMulM_perClass = obj.rateMulM_perClass;
+
+            obj.baseRateMulE_perClass0 = obj.rateMulE_perClass;
+            obj.baseRateMulU_perClass0 = obj.rateMulU_perClass;
+            obj.baseRateMulM_perClass0 = obj.rateMulM_perClass;
+
             % =========================
             % Burst ON/OFF
             % =========================
@@ -218,6 +255,12 @@ classdef TrafficModel
             % default mild burst
             obj.meanOnSlot  = [80 40 220];
             obj.meanOffSlot = [35 55 520];
+
+            obj.baseMeanOnSlot  = obj.meanOnSlot;
+            obj.baseMeanOffSlot = obj.meanOffSlot;
+
+            obj.baseMeanOnSlot0  = obj.meanOnSlot;
+            obj.baseMeanOffSlot0 = obj.meanOffSlot;
 
             obj.queues=cell(obj.numUE,1);
             for u=1:obj.numUE
@@ -230,6 +273,29 @@ classdef TrafficModel
             obj.lastDropThisSlot = obj.makeEmptyDropSummary();
             obj.qosTypeList = ["eMBB","URLLC","mMTC"];
             obj.lastQosStatsThisSlot = obj.makeEmptyQosStats();
+
+            obj.activationOrder = randperm(obj.numUE);
+            obj.activeUEMask = true(obj.numUE,1);
+
+            dynCfg = p.Results.dynamicCfg;
+            if isstruct(dynCfg) && isfield(dynCfg,'enable') && dynCfg.enable
+                if ~isfield(dynCfg,'profiles')
+                    obj.dynamics = TrafficDynamics(dynCfg);
+                else
+                    try
+                        ps = string(dynCfg.profiles);
+                        if any(ps == "traffic")
+                            obj.dynamics = TrafficDynamics(dynCfg);
+                        end
+                    catch
+                    end
+                end
+            end
+
+            trendCfg = p.Results.trendCfg;
+            if isstruct(trendCfg) && isfield(trendCfg,'enable') && trendCfg.enable
+                obj.trend = TrafficTrend(trendCfg);
+            end
         end
 
         function obj = setProfileRatio(obj, ratio)
@@ -286,6 +352,10 @@ classdef TrafficModel
         function obj = step(obj)
             obj.slotNow=obj.slotNow+1;
 
+            obj = obj.applyTrend();
+
+            obj = obj.applyDynamics();
+
             obj.lastDropThisSlot = obj.makeEmptyDropSummary();
             obj.lastDropThisSlot.slot = obj.slotNow;
 
@@ -295,6 +365,9 @@ classdef TrafficModel
             arrivalCount=zeros(obj.numUE,3);
 
             for u=1:obj.numUE
+                if ~isempty(obj.activeUEMask) && ~obj.activeUEMask(u)
+                    continue;
+                end
                 w=obj.mixWeight(u,:);
 
                 % base rates
@@ -429,6 +502,77 @@ classdef TrafficModel
     end
 
     methods (Access=private)
+
+        function obj = applyDynamics(obj)
+            if isempty(obj.dynamics)
+                return;
+            end
+
+            dyn = obj.dynamics.get(obj.slotNow);
+
+            obj.overloadFactor = obj.baseOverloadFactor * dyn.overloadScale;
+
+            obj.rateMulE_perClass = obj.baseRateMulE_perClass;
+            obj.rateMulU_perClass = obj.baseRateMulU_perClass;
+            obj.rateMulM_perClass = obj.baseRateMulM_perClass;
+
+            obj.rateMulE_perClass(1) = obj.baseRateMulE_perClass(1) * dyn.silentMulScale;
+            obj.rateMulU_perClass(1) = obj.baseRateMulU_perClass(1) * dyn.silentMulScale;
+            obj.rateMulM_perClass(1) = obj.baseRateMulM_perClass(1) * dyn.silentMulScale;
+
+            obj.rateMulE_perClass(3) = obj.baseRateMulE_perClass(3) * dyn.heavyMulScale;
+            obj.rateMulU_perClass(3) = obj.baseRateMulU_perClass(3) * dyn.heavyMulScale;
+            obj.rateMulM_perClass(3) = obj.baseRateMulM_perClass(3) * dyn.heavyMulScale;
+
+            onScale = dyn.burstScale;
+            offScale = 1 / max(dyn.burstScale, 0.2);
+            obj.meanOnSlot  = max(1, obj.baseMeanOnSlot * onScale);
+            obj.meanOffSlot = max(1, obj.baseMeanOffSlot * offScale);
+        end
+
+        function obj = applyTrend(obj)
+            if isempty(obj.trend)
+                obj.baseOverloadFactor = obj.baseOverloadFactor0;
+                obj.baseRateMulE_perClass = obj.baseRateMulE_perClass0;
+                obj.baseRateMulU_perClass = obj.baseRateMulU_perClass0;
+                obj.baseRateMulM_perClass = obj.baseRateMulM_perClass0;
+                obj.baseMeanOnSlot = obj.baseMeanOnSlot0;
+                obj.baseMeanOffSlot = obj.baseMeanOffSlot0;
+                return;
+            end
+
+            tr = obj.trend.get(obj.slotNow);
+            obj.lastTrend = tr;
+
+            obj.trendScaleOverload = tr.overloadScale;
+            obj.trendScaleHeavy = tr.heavyMulScale;
+            obj.trendScaleBurstOn = tr.burstOnScale;
+            obj.trendScaleBurstOff = tr.burstOffScale;
+
+            obj.baseOverloadFactor = obj.baseOverloadFactor0 * obj.trendScaleOverload;
+
+            obj.baseRateMulE_perClass = obj.baseRateMulE_perClass0;
+            obj.baseRateMulU_perClass = obj.baseRateMulU_perClass0;
+            obj.baseRateMulM_perClass = obj.baseRateMulM_perClass0;
+
+            obj.baseRateMulE_perClass(3) = obj.baseRateMulE_perClass0(3) * obj.trendScaleHeavy;
+            obj.baseRateMulU_perClass(3) = obj.baseRateMulU_perClass0(3) * obj.trendScaleHeavy;
+            obj.baseRateMulM_perClass(3) = obj.baseRateMulM_perClass0(3) * obj.trendScaleHeavy;
+
+            obj.baseMeanOnSlot  = max(1, obj.baseMeanOnSlot0 * obj.trendScaleBurstOn);
+            obj.baseMeanOffSlot = max(1, obj.baseMeanOffSlot0 * obj.trendScaleBurstOff);
+
+            activeRatio = tr.activeRatio;
+            activeCount = max(1, round(obj.numUE * activeRatio));
+            activeCount = min(activeCount, obj.numUE);
+
+            mask = false(obj.numUE,1);
+            if isempty(obj.activationOrder)
+                obj.activationOrder = randperm(obj.numUE);
+            end
+            mask(obj.activationOrder(1:activeCount)) = true;
+            obj.activeUEMask = mask;
+        end
 
         function obj = refreshRateBoosts(obj)
             obj.urllcRateBoostPerUE = ones(obj.numUE,1);
@@ -635,6 +779,22 @@ classdef TrafficModel
             tr.slot=obj.slotNow;
             tr.arrivalTotal=sum(arrivalCount,1);
 
+            tr.activeUECount = sum(obj.activeUEMask);
+            if ~isempty(obj.lastTrend)
+                tr.trend = obj.lastTrend;
+            end
+
+            tr.dynamic = struct();
+            tr.dynamic.overloadFactor = obj.overloadFactor;
+            tr.dynamic.heavyMulE = obj.rateMulE_perClass(3);
+            tr.dynamic.heavyMulU = obj.rateMulU_perClass(3);
+            tr.dynamic.heavyMulM = obj.rateMulM_perClass(3);
+            tr.dynamic.silentMulE = obj.rateMulE_perClass(1);
+            tr.dynamic.silentMulU = obj.rateMulU_perClass(1);
+            tr.dynamic.silentMulM = obj.rateMulM_perClass(1);
+            tr.dynamic.burstOn = obj.meanOnSlot;
+            tr.dynamic.burstOff = obj.meanOffSlot;
+
             tr.queueBits=zeros(obj.numUE,1);
             tr.queueLen=zeros(obj.numUE,1);
 
@@ -703,6 +863,21 @@ classdef TrafficModel
             fprintf('[DEBUG][slot=%d][traffic] arrived=[%.0f %.0f %.0f] queueBits=%.0f queueLen=%.0f\n', ...
                 tr.slot, tr.arrivalTotal(1), tr.arrivalTotal(2), tr.arrivalTotal(3), ...
                 sum(tr.queueBits), sum(tr.queueLen));
+            if isfield(tr,'activeUECount')
+                fprintf('  trend: activeUE=%d/%d\n', tr.activeUECount, obj.numUE);
+            end
+            if isfield(tr,'trend')
+                tf = tr.trend.factor;
+                fprintf('  trend: factor=%.2f overloadScale=%.2f heavyMulScale=%.2f\n', ...
+                    tf, tr.trend.overloadScale, tr.trend.heavyMulScale);
+            end
+            if isfield(tr,'dynamic')
+                d = tr.dynamic;
+                fprintf('  dyn: overload=%.2f heavyMul=[%.2f %.2f %.2f] silentMul=[%.2f %.2f %.2f]\n', ...
+                    d.overloadFactor, d.heavyMulE, d.heavyMulU, d.heavyMulM, ...
+                    d.silentMulE, d.silentMulU, d.silentMulM);
+                fprintf('  dyn: burstOn=%s burstOff=%s\n', mat2str(d.burstOn), mat2str(d.burstOff));
+            end
         end
 
         function s=initStats(~)

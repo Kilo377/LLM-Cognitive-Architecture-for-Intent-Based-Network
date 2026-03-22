@@ -39,6 +39,13 @@ classdef XAppManager < handle
                 % 调用 xApp
                 action = feval(xapp.entry_point, input);
 
+                if ~isfield(action,"metadata") || ~isstruct(action.metadata)
+                    action.metadata = struct();
+                end
+                if ~isfield(action.metadata,"source")
+                    action.metadata.source = string(xapp.xapp_id);
+                end
+
                 % ===== Debug dump =====
                 if isfield(input,"context") && isfield(input.context,"time")
                     slot = input.context.time.slot;
@@ -72,6 +79,21 @@ classdef XAppManager < handle
                             fprintf("  basePwrMean=%.2f\n", ...
                                 mean(action.energy.basePowerScale));
                         end
+                    end
+                end
+                if slot > 0
+                    doPrint = false;
+                    every = 200;
+                    if isfield(input,"config") && isfield(input.config,"debug")
+                        if isfield(input.config.debug,"enableNearRT") && input.config.debug.enableNearRT
+                            doPrint = true;
+                        end
+                        if isfield(input.config.debug,"nearRTEvery") && isnumeric(input.config.debug.nearRTEvery)
+                            every = max(1, round(input.config.debug.nearRTEvery));
+                        end
+                    end
+                    if doPrint && mod(slot, every) == 0
+                        fprintf('[near-RT RIC][xAppManager] slot=%d ran=%s\n', slot, xapp.xapp_id);
                     end
                 end
                 % ======================

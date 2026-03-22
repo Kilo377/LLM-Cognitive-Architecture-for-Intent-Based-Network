@@ -4,13 +4,13 @@ function cfg = default_config()
 % SIMULATION
 % ==============================
 cfg.sim.slotDuration     = 1e-3;     % 1ms
-cfg.sim.slotPerEpisode   = 200;      % episode length
+cfg.sim.slotPerEpisode   = 1000;     % episode length
 cfg.sim.randomSeed       = 2026;     % reproducible
 
 % Debug
 cfg.debug = struct();
 cfg.debug.enable  = true;      % 是否开启debug
-cfg.debug.every   = 100;       % 每100个slot打印一次
+cfg.debug.every   = 200;       % 每200个slot打印一次
 cfg.debug.modules = ["all"];     % 也可以指定 "radio","handover" "all"等
 cfg.debug.level   = 2;         % 详细等级1
 
@@ -63,6 +63,31 @@ cfg.traffic.hotspot.heavyRatioOutHot = 0.05; % 其他小区 heavy 比例
 
 % 是否启用 burst
 cfg.traffic.enableBurst = true;
+
+
+% ==============================
+% DYNAMIC ENVIRONMENT
+% ==============================
+cfg.dynamic = struct();
+cfg.dynamic.enable = true;
+cfg.dynamic.profiles = ["traffic","mobility","radio"];
+cfg.dynamic.periodRange = [300 500];
+cfg.dynamic.intensity = "medium";
+cfg.dynamic.seed = 2026;
+
+% ==============================
+% TREND (LONG-TERM DRIFT)
+% ==============================
+cfg.trend = struct();
+cfg.trend.enable = true;
+cfg.trend.startSlot = 300;
+cfg.trend.endSlot = 1600;
+cfg.trend.loadRange = [1.0 2.2];
+cfg.trend.heavyMulRange = [1.0 1.8];
+cfg.trend.activeUERange = [0.3 1.0];
+cfg.trend.edgeBiasRange = [0.0 1.0];
+cfg.trend.burstOnScaleRange = [1.0 1.6];
+cfg.trend.burstOffScaleRange = [1.0 0.6];
 
 
 

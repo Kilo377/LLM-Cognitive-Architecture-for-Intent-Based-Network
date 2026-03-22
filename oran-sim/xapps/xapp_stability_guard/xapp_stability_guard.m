@@ -17,6 +17,11 @@ function action = xapp_stability_guard(input)
     updateInterval = 10;
     stepHyst = 1.0;
 
+    if state.debugEnable
+        fprintf('[DEBUG][slot=%d][xapp_stability_guard] preUpdate next=%d hyst=%.2f ho=%d pp=%d drop=%.4f bler=%.4f thr=%.2f\n', ...
+            slot, state.nextUpdate, state.hyst, hoCount, ppCount, dropRatio, meanBler, thr);
+    end
+
     if slot >= state.nextUpdate
         dHo = hoCount - state.lastHO;
         dPp = ppCount - state.lastPP;
@@ -47,18 +52,23 @@ function action = xapp_stability_guard(input)
         state.lastDrop = dropRatio;
         state.lastThr = thr;
         state.nextUpdate = slot + updateInterval;
+
+        if state.debugEnable
+            fprintf('[DEBUG][slot=%d][xapp_stability_guard] score=%.2f hyst=%.2f dHo=%d dPp=%d dDrop=%.4f dBler=%.4f dThr=%.2f\n', ...
+                slot, score, state.hyst, dHo, dPp, dDrop, dBler, dThr);
+        end
     end
 
     action.handover.hysteresisOffset_dB = state.hyst * ones(numCell,1);
 
-    saveState(state);
+    state = loadState(state);
 end
 
 function [state, slot] = getState(obs)
 
     slot = 0;
-    if isfield(obs,'meta') && isfield(obs.meta,'slot')
-        slot = obs.meta.slot;
+    if isfield(obs,'time') && isfield(obs.time,'slot')
+        slot = obs.time.slot;
     end
 
     state = loadState();
@@ -80,22 +90,21 @@ function state = initState()
     state.lastBLER = 0;
     state.lastDrop = 0;
     state.lastThr = 0;
+
+    state.debugEnable = true;
 end
 
 
-function state = loadState()
+function state = loadState(newState)
 
     persistent st
     if isempty(st)
         st = initState();
     end
+    if nargin > 0
+        st = newState;
+    end
     state = st;
-end
-
-function saveState(state)
-
-    persistent st
-    st = state;
 end
 
 function v = getField(s, path, defaultValue)

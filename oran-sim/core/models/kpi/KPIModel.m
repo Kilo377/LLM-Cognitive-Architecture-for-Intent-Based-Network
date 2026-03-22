@@ -134,6 +134,52 @@ classdef KPIModel
             ctx.tmp.kpi.stability.pingPongCount = ctx.accPingPongCount;
 
             %% =====================================================
+            % 6.1) INSTANT KPI (per-slot)
+            %% =====================================================
+            ctx.tmp.kpi.instant = struct();
+
+            if isfield(ctx.tmp,'lastServedBitsPerUE')
+                instBits = sum(double(ctx.tmp.lastServedBitsPerUE(:)));
+                ctx.tmp.kpi.instant.throughput_Mbps = (instBits / max(double(ctx.dt), eps)) / 1e6;
+            else
+                ctx.tmp.kpi.instant.throughput_Mbps = 0;
+            end
+
+            instDropRatio = 0;
+            if isprop(ctx,'scenario') && isfield(ctx.scenario,'traffic') && isfield(ctx.scenario.traffic,'model')
+                tm = ctx.scenario.traffic.model;
+                if isprop(tm,'lastDropThisSlot') && ~isempty(tm.lastDropThisSlot)
+                    droppedBits = double(tm.lastDropThisSlot.bitsTotal);
+                    denom = droppedBits;
+                    if isfield(ctx.tmp,'lastServedBitsPerUE')
+                        denom = denom + sum(double(ctx.tmp.lastServedBitsPerUE(:)));
+                    end
+                    if denom > 0
+                        instDropRatio = droppedBits / denom;
+                    end
+                end
+            end
+            ctx.tmp.kpi.instant.dropRatio = instDropRatio;
+
+            if isfield(ctx.tmp,'lastBLERPerUE')
+                ctx.tmp.kpi.instant.meanBLER = mean(double(ctx.tmp.lastBLERPerUE(:)));
+            else
+                ctx.tmp.kpi.instant.meanBLER = 0;
+            end
+
+            if isprop(ctx,'sinr_dB') && ~isempty(ctx.sinr_dB)
+                ctx.tmp.kpi.instant.meanSINR_dB = mean(double(ctx.sinr_dB(:)));
+            else
+                ctx.tmp.kpi.instant.meanSINR_dB = 0;
+            end
+
+            instPrbUtil = 0;
+            if isprop(ctx,'lastPRBUsedPerCell_slot') && isprop(ctx,'numPRBPerCell')
+                instPrbUtil = mean(double(ctx.lastPRBUsedPerCell_slot(:)) ./ max(double(ctx.numPRBPerCell(:)),1));
+            end
+            ctx.tmp.kpi.instant.prbUtilMean = instPrbUtil;
+
+            %% =====================================================
             % 7️⃣ PHYSICAL CONGESTION INDEX
             %% =====================================================
             % 基于物理逻辑构建，不是经验拼接

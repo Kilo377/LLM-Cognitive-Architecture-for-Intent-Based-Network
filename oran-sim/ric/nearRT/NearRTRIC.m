@@ -39,6 +39,8 @@ classdef NearRTRIC
         lastAction
         lastActionSlot
 
+        lastConflict
+
         % debug
         debugEnable
     end
@@ -69,6 +71,7 @@ classdef NearRTRIC
             % cache
             obj.lastAction = RanActionBus.init(cfg);
             obj.lastActionSlot = 0;
+            obj.lastConflict = struct();
 
             % resolve xApp root
             obj.xappRoot = obj.resolveXAppRoot(cfg);
@@ -155,6 +158,12 @@ classdef NearRTRIC
 
             % merge
             merged = ActionMerger(actions);
+
+            if isfield(merged,'metadata') && isfield(merged.metadata,'lastConflict') && ...
+                    ~isempty(fieldnames(merged.metadata.lastConflict))
+                obj.lastConflict = merged.metadata.lastConflict;
+                obj.lastConflict.slot = slot;
+            end
 
             % init raw bus
             rawAction = RanActionBus.init(obj.cfg);

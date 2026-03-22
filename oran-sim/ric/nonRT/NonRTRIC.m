@@ -137,7 +137,7 @@ classdef NonRTRIC
                     end
                 end
             end
-            [policy, status] = obj.waitPolicy(report.meta.slot);
+            [policy, status] = obj.waitPolicy(report.time.slot);
 
             if strcmp(status, "ok")
                 [policy, valid] = obj.normalizePolicy(policy);
@@ -184,9 +184,11 @@ classdef NonRTRIC
 
             report.meta = struct();
             report.meta.schemaVersion = "1.0";
-            report.meta.slot = obj.getSlot(ctx);
-            report.meta.time_s = obj.getTime(ctx);
             report.meta.generatedAt = obj.utcNow();
+
+            report.time = struct();
+            report.time.slot = obj.getSlot(ctx);
+            report.time.time_s = obj.getTime(ctx);
 
             report.policy = struct();
             report.policy.current = obj.getCurrentPolicy(ric);
@@ -235,7 +237,7 @@ classdef NonRTRIC
             policies = obj.loadExistingPolicies();
 
             newEntry = struct();
-            newEntry.policy_id = "policy_" + string(report.meta.slot);
+            newEntry.policy_id = "policy_" + string(report.time.slot);
             newEntry.enabledXApps = obj.normalizeStringList(newPolicy.enabledXApps);
             newEntry.kpi_focus = string.empty(1,0);
             newEntry.status = "active";

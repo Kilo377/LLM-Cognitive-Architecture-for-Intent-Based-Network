@@ -71,7 +71,9 @@ scenario.mobility.model = UEMobilityModel( ...
     'areaY', [-areaR areaR], ...
     'speedRange', [1 25], ...
     'highSpeedRatio', 0.3, ...
-    'pauseTime', 0 );
+    'pauseTime', 0, ...
+    'dynamicCfg', getDynamicCfg(cfg), ...
+    'trendCfg', getTrendCfg(cfg) );
 
 %% =====================================================
 % 4. Traffic
@@ -109,6 +111,14 @@ if isfield(cfg,'traffic')
     if isfield(cfg.traffic,'silentMultiplier')
         trafficArgs = [trafficArgs, {'silentMultiplier', cfg.traffic.silentMultiplier}]; %#ok<AGROW>
     end
+end
+
+if isfield(cfg,'dynamic')
+    trafficArgs = [trafficArgs, {'dynamicCfg', cfg.dynamic}]; %#ok<AGROW>
+end
+
+if isfield(cfg,'trend')
+    trafficArgs = [trafficArgs, {'trendCfg', cfg.trend}]; %#ok<AGROW>
 end
 
 scenario.traffic.model = TrafficModel(trafficArgs{:});
@@ -179,4 +189,20 @@ scenario.energy.k  = 4;
 
 fprintf('[ScenarioBuilder] Scenario ready\n');
 
+end
+
+function dynCfg = getDynamicCfg(cfg)
+    if isfield(cfg,'dynamic')
+        dynCfg = cfg.dynamic;
+    else
+        dynCfg = struct();
+    end
+end
+
+function trendCfg = getTrendCfg(cfg)
+    if isfield(cfg,'trend')
+        trendCfg = cfg.trend;
+    else
+        trendCfg = struct();
+    end
 end

@@ -437,6 +437,9 @@ classdef RanContext < handle
                 if isfield(obj.tmp.kpi,'stability')
                     s.kpi.stability = obj.tmp.kpi.stability;
                 end
+                if isfield(obj.tmp.kpi,'instant')
+                    s.kpi.instant = obj.tmp.kpi.instant;
+                end
             end
 
             s.ctrl = obj.ctrl;

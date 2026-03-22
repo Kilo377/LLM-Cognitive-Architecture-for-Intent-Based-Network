@@ -62,6 +62,9 @@ classdef RadioModel < handle
         shadowField
         smoothedLoad
         lastUEPos
+
+        % Dynamics
+        dynamics
     end
 
     methods
@@ -89,6 +92,8 @@ classdef RadioModel < handle
             if isempty(obj.shadowField)
                 obj.initialize(ctx);
             end
+
+            dyn = obj.getDynamics(ctx);
 
             gNB = ctx.scenario.topology.gNBPos;
 
@@ -152,6 +157,7 @@ classdef RadioModel < handle
                             - pl ...
                             + obj.shadowField(:,c) ...
                             + fastFade(:,c) ...
+                            + dyn.shadowingOffset_dB ...
                             + beamGain;
             end
 
@@ -172,6 +178,8 @@ classdef RadioModel < handle
             loadPart = load.^obj.kLoadExp;
 
             interfScale = txPart .* bwPart .* loadPart;
+
+            interfScale = interfScale * dyn.interferenceScale;
 
             if isprop(ctx,'ctrl') && isfield(ctx.ctrl,'interferenceCouplingFactor')
                 interfScale = interfScale * ctx.ctrl.interferenceCouplingFactor;
@@ -266,7 +274,7 @@ classdef RadioModel < handle
             %% =========================================
             % Debug
             %% =========================================
-            ctx = obj.writeDebugTrace(ctx, txPower, BWcell, load, interfScale, absLeak);
+            ctx = obj.writeDebugTrace(ctx, txPower, BWcell, load, interfScale, absLeak, dyn);
 
             if obj.shouldPrint(ctx)
                 obj.printDebug(ctx);
@@ -276,7 +284,7 @@ classdef RadioModel < handle
 
     methods (Access=private)
 
-        function ctx = writeDebugTrace(~, ctx, txPower, BWcell, load, interfScale, absLeak)
+        function ctx = writeDebugTrace(~, ctx, txPower, BWcell, load, interfScale, absLeak, dyn)
 
             if ~isfield(ctx.tmp,'debug')
                 ctx.tmp.debug = struct();
@@ -293,12 +301,43 @@ classdef RadioModel < handle
             tr.cell.load = load;
             tr.cell.interfScale = interfScale;
             tr.cell.absLeak = absLeak;
+            tr.cell.dynamicInterfScale = dyn.interferenceScale;
+            tr.cell.dynamicShadowOffset_dB = dyn.shadowingOffset_dB;
 
             tr.ue.meanSinr = mean(ctx.sinr_dB);
             tr.ue.minSinr  = min(ctx.sinr_dB);
             tr.ue.maxSinr  = max(ctx.sinr_dB);
 
             ctx.tmp.debug.trace.radio = tr;
+        end
+
+        function dyn = getDynamics(obj, ctx)
+            dyn = struct('interferenceScale',1.0,'shadowingOffset_dB',0.0);
+
+            if ~isfield(ctx,'cfg') || ~isfield(ctx.cfg,'dynamic')
+                return;
+            end
+
+            dcfg = ctx.cfg.dynamic;
+            if ~isstruct(dcfg) || ~isfield(dcfg,'enable') || ~dcfg.enable
+                return;
+            end
+
+            if isfield(dcfg,'profiles')
+                try
+                    ps = string(dcfg.profiles);
+                    if ~any(ps == "radio")
+                        return;
+                    end
+                catch
+                end
+            end
+
+            if isempty(obj.dynamics)
+                obj.dynamics = RadioDynamics(dcfg);
+            end
+
+            dyn = obj.dynamics.get(ctx.slot);
         end
 
         function tf = shouldPrint(~, ctx)
@@ -332,6 +371,8 @@ classdef RadioModel < handle
 
             fprintf('[DEBUG][slot=%d][radio] meanSINR=%.2f dB min=%.2f max=%.2f absLeak=%.3f\n', ...
                 tr.slot, tr.ue.meanSinr, tr.ue.minSinr, tr.ue.maxSinr, tr.cell.absLeak);
+            fprintf('  dyn: interferenceScale=%.2f shadowOffset_dB=%.2f\n', ...
+                tr.cell.dynamicInterfScale, tr.cell.dynamicShadowOffset_dB);
         end
     end
 end

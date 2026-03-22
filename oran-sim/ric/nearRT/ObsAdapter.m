@@ -40,7 +40,6 @@ classdef ObsAdapter < handle
 
             %% ===== RIC Meta =====
             obs.meta = struct();
-            obs.meta.slot        = state.time.slot;
             obs.meta.timestamp_s = state.time.t_s;
 
             %% ===== Optional future extension bucket =====

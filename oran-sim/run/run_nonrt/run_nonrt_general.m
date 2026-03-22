@@ -104,6 +104,8 @@ function run_nonrt_general()
         mean(meanSinr, 'omitnan'), mean(p10Sinr, 'omitnan'), ...
         mean(p50Sinr, 'omitnan'), mean(p90Sinr, 'omitnan'));
 
+    printLastConflict(ric);
+
     if isfield(kernel.ctx.tmp,'kpi')
         fprintf('\n===== Non-RT KPI Full Dump =====\n');
         disp(kernel.ctx.tmp.kpi);
@@ -163,6 +165,36 @@ function v = getField(s, path, defaultValue)
         end
     else
         v = defaultValue;
+    end
+end
+
+function printLastConflict(ric)
+    if isprop(ric,'lastConflict') && ~isempty(ric.lastConflict)
+        lc = ric.lastConflict;
+        if isfield(lc,'domain') && lc.domain == "handover"
+            fprintf('\n===== Last Handover Conflict =====\n');
+            if isfield(lc,'slot')
+                fprintf('slot=%d\n', lc.slot);
+            end
+            if isfield(lc,'field')
+                fprintf('field=handover.%s\n', lc.field);
+            end
+            if isfield(lc,'mergeMode')
+                fprintf('mergeMode=%s\n', lc.mergeMode);
+            end
+            if isfield(lc,'sources')
+                fprintf('sources=%s\n', mat2str(string(lc.sources)));
+            end
+            if isfield(lc,'values')
+                try
+                    fprintf('values=%s\n', mat2str(lc.values));
+                catch
+                    fprintf('values=[%d items]\n', numel(lc.values));
+                end
+            end
+        end
+    else
+        fprintf('\nNo handover conflicts detected.\n');
     end
 end
 

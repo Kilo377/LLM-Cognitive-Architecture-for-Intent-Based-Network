@@ -17,6 +17,9 @@ classdef UEMobilityModel
         speed
         targetPos
 
+        baseSpeed
+        slotNow
+
         %% Area
         areaX
         areaY
@@ -34,6 +37,14 @@ classdef UEMobilityModel
         hotspotRatio = 0.6
         edgeRatio    = 0.3
         hotspotSigma = 40
+
+        %% ===== dynamics =====
+        dynamics
+
+        %% ===== trend =====
+        trend
+        edgeBias = 0
+        lastTrend
     end
 
     methods
@@ -52,6 +63,8 @@ classdef UEMobilityModel
             addParameter(p,'speedRange',[1 25]);
             addParameter(p,'highSpeedRatio',0.3);
             addParameter(p,'pauseTime',0);
+            addParameter(p,'dynamicCfg',struct());
+            addParameter(p,'trendCfg',struct());
 
             parse(p,varargin{:});
 
@@ -136,21 +149,61 @@ classdef UEMobilityModel
 
             obj.pauseTime  = p.Results.pauseTime;
             obj.pauseTimer = zeros(obj.numUE,1);
+
+            obj.baseSpeed = obj.speed;
+            obj.slotNow = 0;
+
+            dynCfg = p.Results.dynamicCfg;
+            if isstruct(dynCfg) && isfield(dynCfg,'enable') && dynCfg.enable
+                if ~isfield(dynCfg,'profiles')
+                    obj.dynamics = MobilityDynamics(dynCfg);
+                else
+                    try
+                        ps = string(dynCfg.profiles);
+                        if any(ps == "mobility")
+                            obj.dynamics = MobilityDynamics(dynCfg);
+                        end
+                    catch
+                    end
+                end
+            end
+
+            trendCfg = p.Results.trendCfg;
+            if isstruct(trendCfg) && isfield(trendCfg,'enable') && trendCfg.enable
+                obj.trend = MobilityTrend(trendCfg);
+            end
         end
 
 
         %% =========================================================
         % Generate random target
         %% =========================================================
-        function target = generateRandomTarget(obj,n)
+        function target = generateRandomTarget(obj, n, edgeBias)
 
             if nargin < 2
                 n = obj.numUE;
             end
+            if nargin < 3
+                edgeBias = 0;
+            end
 
-            target = [ ...
-                rand(n,1)*(diff(obj.areaX))+obj.areaX(1), ...
-                rand(n,1)*(diff(obj.areaY))+obj.areaY(1)];
+            target = zeros(n,2);
+
+            R = min(diff(obj.areaX), diff(obj.areaY)) / 2;
+            cx = mean(obj.areaX);
+            cy = mean(obj.areaY);
+
+            for i = 1:n
+                if rand < edgeBias
+                    theta = 2*pi*rand;
+                    r = (0.8 + 0.2*rand) * R;
+                    target(i,1) = cx + r*cos(theta);
+                    target(i,2) = cy + r*sin(theta);
+                else
+                    target(i,1) = rand*(diff(obj.areaX))+obj.areaX(1);
+                    target(i,2) = rand*(diff(obj.areaY))+obj.areaY(1);
+                end
+            end
         end
 
 
@@ -158,12 +211,38 @@ classdef UEMobilityModel
         % Step update
         %% =========================================================
         function [obj,pos] = step(obj,deltaT)
+            obj.slotNow = obj.slotNow + 1;
+
+            obj = obj.applyTrend();
+
+            speedScale = 1.0;
+            directionJitter = 0.0;
+            pauseProb = 0.0;
+            if ~isempty(obj.dynamics)
+                dyn = obj.dynamics.get(obj.slotNow);
+                speedScale = dyn.speedScale;
+                directionJitter = dyn.directionJitter;
+                pauseProb = dyn.pauseProbability;
+            end
+
+            obj.speed = obj.baseSpeed * speedScale;
 
             for i = 1:obj.numUE
 
                 if obj.pauseTimer(i) > 0
                     obj.pauseTimer(i) = obj.pauseTimer(i) - deltaT;
                     continue;
+                end
+
+                if obj.pauseTime > 0 && pauseProb > 0
+                    if rand < pauseProb
+                        obj.pauseTimer(i) = obj.pauseTime;
+                        continue;
+                    end
+                end
+
+                if obj.edgeBias > 0 && rand < 0.02 * obj.edgeBias
+                    obj.targetPos(i,:) = obj.generateRandomTarget(1, obj.edgeBias);
                 end
 
                 dx = obj.targetPos(i,1) - obj.pos(i,1);
@@ -174,13 +253,23 @@ classdef UEMobilityModel
                 if dist < obj.speed(i)*deltaT
 
                     obj.pos(i,:) = obj.targetPos(i,:);
-                    obj.targetPos(i,:) = obj.generateRandomTarget(1);
+                    obj.targetPos(i,:) = obj.generateRandomTarget(1, obj.edgeBias);
                     obj.pauseTimer(i) = obj.pauseTime;
 
                 else
 
                     dirX = dx / dist;
                     dirY = dy / dist;
+
+                    if directionJitter > 0
+                        jitterAngle = (rand - 0.5) * 2 * directionJitter;
+                        c = cos(jitterAngle);
+                        s = sin(jitterAngle);
+                        jx = dirX * c - dirY * s;
+                        jy = dirX * s + dirY * c;
+                        dirX = jx;
+                        dirY = jy;
+                    end
 
                     obj.pos(i,1) = obj.pos(i,1) + obj.speed(i)*dirX*deltaT;
                     obj.pos(i,2) = obj.pos(i,2) + obj.speed(i)*dirY*deltaT;
@@ -197,6 +286,19 @@ classdef UEMobilityModel
         function state = getState(obj)
             state.pos   = obj.pos;
             state.speed = obj.speed;
+        end
+    end
+
+    methods (Access=private)
+        function obj = applyTrend(obj)
+            if isempty(obj.trend)
+                obj.edgeBias = 0;
+                return;
+            end
+
+            tr = obj.trend.get(obj.slotNow);
+            obj.lastTrend = tr;
+            obj.edgeBias = tr.edgeBias;
         end
     end
 end

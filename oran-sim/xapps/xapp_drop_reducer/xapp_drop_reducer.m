@@ -1,4 +1,4 @@
-function action = xapp_fairness_scheduler(input)
+function action = xapp_drop_reducer(input)
 
     obs = input.measurements;
 
@@ -29,32 +29,33 @@ function action = xapp_fairness_scheduler(input)
         bufferBits = double(obs.ue.buffer_bits(:));
     end
 
-    jain = getField(obs, "kpi.capacity.jainFairness", nan);
-    thr = getField(obs, "kpi.instant.throughput_Mbps", nan);
-    bler = getField(obs, "kpi.instant.meanBLER", nan);
+    thr = getField(obs, "kpi.instant.throughput_Mbps", 0);
+    dropRatio = getField(obs, "kpi.instant.dropRatio", 0);
+    meanBler = getField(obs, "kpi.instant.meanBLER", 0);
 
-    state = updateBuffers(state, jain, thr, bler);
+    state = updateBuffers(state, thr, dropRatio, meanBler);
 
     if slot >= state.nextUpdate && state.sampleCount >= state.window
-        [winJain, winThr, winBler] = getWindowStats(state);
+        [winThr, winDrop, winBler] = getWindowStats(state);
 
-        state = maybeInitBaseline(state, winThr, winBler);
-        reward = computeReward(state, winJain, winThr, winBler);
-        state = updateBandit(state, reward, winThr, winBler);
+        state = maybeInitBaseline(state, winDrop, winBler);
+        reward = computeReward(state, winThr, winDrop, winBler);
+        state = updateBandit(state, reward);
 
-        state.prevWindowJain = winJain;
         state.prevWindowThr = winThr;
+        state.prevWindowDrop = winDrop;
         state.prevWindowBler = winBler;
         state.nextUpdate = slot + state.updatePeriod;
 
         if state.debugEnable
-            fprintf('[DEBUG][slot=%d][xapp_fairness_scheduler] action=%d reward=%.4f jain=%.3f thr=%.2f bler=%.4f\n', ...
-                slot, state.actionIdx, reward, winJain, winThr, winBler);
+            fprintf('[DEBUG][slot=%d][xapp_drop_reducer] action=%d reward=%.4f thr=%.2f drop=%.4f bler=%.4f\n', ...
+                slot, state.actionIdx, reward, winThr, winDrop, winBler);
         end
     end
 
+    weights = state.actions(state.actionIdx,:);
+
     action.scheduling.selectedUE = zeros(numCell,1);
-    actionIdx = state.actionIdx;
 
     for c = 1:numCell
         ueIdx = find(servingCell == c);
@@ -71,12 +72,7 @@ function action = xapp_fairness_scheduler(input)
         sNorm = normalizeVector(s);
         bNorm = normalizeVector(b);
 
-        if actionIdx == 3
-            score = 0.8 * (1 - sNorm) + 0.2 * bNorm;
-        else
-            weights = state.actions(actionIdx,:);
-            score = weights(1) * sNorm + weights(2) * bNorm;
-        end
+        score = weights(1) * sNorm + weights(2) * bNorm;
 
         [~,k] = max(score);
         action.scheduling.selectedUE(c) = ueIdx(k);
@@ -129,9 +125,8 @@ function state = initState()
 
     % action weights: [sinrWeight bufferWeight]
     state.actions = [ ...
-        0.8 0.2; ...
-        0.5 0.5; ...
-        0.0 0.0];
+        0.4 0.6; ...
+        0.2 0.8];
 
     state.actionIdx = 1;
     nA = size(state.actions,1);
@@ -139,21 +134,21 @@ function state = initState()
     state.meanReward = zeros(nA,1);
     state.alpha = 0.6;
 
-    state.bufJain = nan(state.window,1);
     state.bufThr = nan(state.window,1);
+    state.bufDrop = nan(state.window,1);
     state.bufBler = nan(state.window,1);
     state.bufPos = 0;
     state.sampleCount = 0;
 
-    state.prevWindowJain = nan;
     state.prevWindowThr = nan;
+    state.prevWindowDrop = nan;
     state.prevWindowBler = nan;
 
-    state.baselineThr = nan;
+    state.baselineDrop = nan;
     state.baselineBler = nan;
 
-    state.thrDropCap = 0.10;
-    state.blerRiseCap = 0.10;
+    state.dropCapFactor = 1.2;
+    state.blerCapFactor = 1.2;
 
     state.debugEnable = false;
 end
@@ -170,89 +165,69 @@ function state = loadState(newState)
     state = st;
 end
 
-function state = updateBuffers(state, jain, thr, bler)
+function state = updateBuffers(state, thr, dropRatio, meanBler)
     pos = state.bufPos + 1;
     if pos > state.window
         pos = 1;
     end
     state.bufPos = pos;
 
-    state.bufJain(pos) = jain;
     state.bufThr(pos) = thr;
-    state.bufBler(pos) = bler;
+    state.bufDrop(pos) = dropRatio;
+    state.bufBler(pos) = meanBler;
 
     state.sampleCount = min(state.sampleCount + 1, state.window);
 end
 
-function [winJain, winThr, winBler] = getWindowStats(state)
+function [winThr, winDrop, winBler] = getWindowStats(state)
     order = [state.bufPos+1:state.window, 1:state.bufPos];
     if isempty(order)
-        winJain = nan; winThr = nan; winBler = nan;
+        winThr = nan; winDrop = nan; winBler = nan;
         return;
     end
 
-    valsJain = state.bufJain(order);
     valsThr = state.bufThr(order);
+    valsDrop = state.bufDrop(order);
     valsBler = state.bufBler(order);
 
-    winJain = mean(valsJain, 'omitnan');
     winThr = mean(valsThr, 'omitnan');
+    winDrop = mean(valsDrop, 'omitnan');
     winBler = mean(valsBler, 'omitnan');
 end
 
-function state = maybeInitBaseline(state, winThr, winBler)
-    if isnan(state.baselineThr) && ~isnan(winThr)
-        state.baselineThr = winThr;
+function state = maybeInitBaseline(state, winDrop, winBler)
+    if isnan(state.baselineDrop) && ~isnan(winDrop)
+        state.baselineDrop = winDrop;
     end
     if isnan(state.baselineBler) && ~isnan(winBler)
         state.baselineBler = winBler;
     end
 end
 
-function reward = computeReward(state, winJain, winThr, winBler)
-    if isnan(state.prevWindowJain)
+function reward = computeReward(state, winThr, winDrop, winBler)
+    if isnan(state.prevWindowThr)
         reward = 0;
         return;
     end
 
-    dJain = winJain - state.prevWindowJain;
+    dThr = winThr - state.prevWindowThr;
 
-    thrDrop = 0;
-    if ~isnan(state.baselineThr) && state.baselineThr > 0
-        thrDrop = max(0, (state.baselineThr - winThr) / state.baselineThr);
-    end
+    dropCap = max(state.baselineDrop * state.dropCapFactor, 0.01);
+    blerCap = max(state.baselineBler * state.blerCapFactor, 0.01);
 
-    blerRise = 0;
-    if ~isnan(state.baselineBler) && state.baselineBler > 0
-        blerRise = max(0, (winBler - state.baselineBler) / state.baselineBler);
-    end
+    dropPenalty = max(0, winDrop - dropCap);
+    blerPenalty = max(0, winBler - blerCap);
 
-    thrPenalty = max(0, thrDrop - state.thrDropCap);
-    blerPenalty = max(0, blerRise - state.blerRiseCap);
-
-    reward = dJain - thrPenalty - blerPenalty;
+    reward = dThr - dropPenalty - blerPenalty;
 end
 
-function state = updateBandit(state, reward, winThr, winBler)
+function state = updateBandit(state, reward)
     idx = state.actionIdx;
     state.counts(idx) = state.counts(idx) + 1;
     c = state.counts(idx);
     state.meanReward(idx) = state.meanReward(idx) + (reward - state.meanReward(idx)) / c;
 
     state.actionIdx = selectAction(state);
-
-    if state.baselineThr > 0
-        thrDrop = max(0, (state.baselineThr - winThr) / state.baselineThr);
-        if thrDrop > state.thrDropCap
-            state.actionIdx = 1;
-        end
-    end
-    if state.baselineBler > 0
-        blerRise = max(0, (winBler - state.baselineBler) / state.baselineBler);
-        if blerRise > state.blerRiseCap
-            state.actionIdx = 1;
-        end
-    end
 end
 
 function idx = selectAction(state)

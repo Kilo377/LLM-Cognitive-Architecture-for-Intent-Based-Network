@@ -1,4 +1,4 @@
-function run_xapp_handover_stability_compare_visual()
+function run_xapp_mobility_vs_baseline()
 
     if exist('setup_path','file') ~= 2
         runDir = fileparts(mfilename('fullpath'));
@@ -9,14 +9,12 @@ function run_xapp_handover_stability_compare_visual()
 
     cfg = default_config();
     cfg.debug.enable = false;
-    cfg.sim.slotPerEpisode = 1000;
+    cfg.sim.slotPerEpisode = 2000;
     cfg.nearRT.xappRoot = fullfile(rootDir, "xapps");
 
     cases = {
         "baseline", [];
-        "mobility_only", ["xapp_mobility_balancer"];
-        "stability_only", ["xapp_stability_guard"];
-        "mobility_plus_stability", ["xapp_mobility_balancer", "xapp_stability_guard"]
+        "mobility_only", ["xapp_mobility_balancer"]
     };
 
     results = struct();
@@ -35,13 +33,48 @@ function run_xapp_handover_stability_compare_visual()
             state = kernel.ctx.state;
             [ric, action, ~] = ric.step(state);
             kernel = kernel.step(action);
+
+            if mod(s, 100) == 0
+                fprintf('[progress][%s] slot=%d/%d\n', name, s, cfg.sim.slotPerEpisode);
+            end
         end
 
         results.(name) = summarizeKpi(kernel.ctx.tmp.kpi);
+        printLastConflict(ric, name);
     end
 
     printSummary(results);
     plotSummary(results, cases(:,1));
+end
+
+function printLastConflict(ric, caseName)
+    if isprop(ric,'lastConflict') && ~isempty(ric.lastConflict)
+        lc = ric.lastConflict;
+        if isfield(lc,'domain') && lc.domain == "handover"
+            fprintf("\n===== Last Handover Conflict (%s) =====\n", caseName);
+            if isfield(lc,'slot')
+                fprintf("slot=%d\n", lc.slot);
+            end
+            if isfield(lc,'field')
+                fprintf("field=handover.%s\n", lc.field);
+            end
+            if isfield(lc,'mergeMode')
+                fprintf("mergeMode=%s\n", lc.mergeMode);
+            end
+            if isfield(lc,'sources')
+                fprintf("sources=%s\n", mat2str(string(lc.sources)));
+            end
+            if isfield(lc,'values')
+                try
+                    fprintf("values=%s\n", mat2str(lc.values));
+                catch
+                    fprintf("values=[%d items]\n", numel(lc.values));
+                end
+            end
+        end
+    else
+        fprintf("\nNo handover conflicts detected (%s).\n", caseName);
+    end
 end
 
 function out = summarizeKpi(kpi)
@@ -59,7 +92,7 @@ function printSummary(results)
 
     names = fieldnames(results);
 
-    fprintf("\n===== xApp Handover/Stability KPI Summary =====\n");
+    fprintf("\n===== xApp Mobility vs Baseline KPI Summary =====\n");
     fprintf("Case                    Thr(Mbps)  DropRatio  BLER     HOcnt  PingPong  RLF\n");
 
     for i = 1:numel(names)
@@ -88,7 +121,7 @@ function plotSummary(results, caseNames)
         drop(i) = r.dropRatio;
     end
 
-    figure('Name','xApp Handover/Stability Compare');
+    figure('Name','xApp Mobility vs Baseline');
 
     subplot(2,3,1);
     bar(ho);

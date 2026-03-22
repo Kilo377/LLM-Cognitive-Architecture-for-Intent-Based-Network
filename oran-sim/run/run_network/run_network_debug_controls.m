@@ -9,10 +9,10 @@
 
     cfg = default_config();
     cfg = applyHighLoad(cfg);
-    cfg.sim.slotPerEpisode = 50;
+    cfg.sim.slotPerEpisode = 1000;
     cfg.debug.enable = true;
-    cfg.debug.every = 5;
-    cfg.debug.modules = ["selectedUEPolicy","scheduler"];
+    cfg.debug.every = 200;
+    cfg.debug.modules = ["selectedUEPolicy","scheduler","traffic","radio"];
     cfg.debug.level = 3;
     cfg.ctrl.selectedUEPolicy = "queueMax";
 

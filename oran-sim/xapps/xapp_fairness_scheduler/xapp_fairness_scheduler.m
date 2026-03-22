@@ -29,6 +29,13 @@ function action = xapp_fairness_scheduler(input)
         bufferBits = double(obs.ue.buffer_bits(:));
     end
 
+    slot = 0;
+    if isfield(obs,'meta') && isfield(obs.meta,'slot')
+        slot = obs.meta.slot;
+    end
+
+    intervalSlots = 5;
+
     for c = 1:numCell
         ueIdx = find(servingCell == c);
         if isempty(ueIdx)
@@ -41,13 +48,13 @@ function action = xapp_fairness_scheduler(input)
         end
         b = bufferBits(ueIdx);
 
-        sNorm = normalizeVector(s);
-        bNorm = normalizeVector(b);
+        [ueBest, ueFair] = selectCandidates(ueIdx, s, b);
 
-        score = 0.5 * (1 - sNorm) + 0.5 * bNorm;
-
-        [~,k] = max(score);
-        action.scheduling.selectedUE(c) = ueIdx(k);
+        if shouldUseFairness(slot, c, intervalSlots, s, b)
+            action.scheduling.selectedUE(c) = ueFair;
+        else
+            action.scheduling.selectedUE(c) = ueBest;
+        end
     end
 end
 
@@ -67,4 +74,58 @@ function out = normalizeVector(x)
     end
 
     out = (x - xMin) / (xMax - xMin);
+end
+
+function tf = shouldUseFairness(slot, cellId, intervalSlots, s, b)
+
+    if intervalSlots <= 1
+        tf = true;
+        return;
+    end
+
+    weakMask = getWeakMask(s);
+    if ~any(weakMask)
+        tf = false;
+        return;
+    end
+
+    bufMed = median(b) + 1;
+    weakBacklog = any(b(weakMask) > bufMed);
+    if ~weakBacklog
+        tf = false;
+        return;
+    end
+
+    tf = mod(slot + cellId, intervalSlots) == 0;
+end
+
+function [ueBest, ueFair] = selectCandidates(ueIdx, s, b)
+
+    sNorm = normalizeVector(s);
+    bNorm = normalizeVector(b);
+
+    [~,kBest] = max(sNorm);
+    ueBest = ueIdx(kBest);
+
+    weakMask = getWeakMask(s);
+    if any(weakMask)
+        scoreFair = 0.7 * (1 - sNorm) + 0.3 * bNorm;
+        scoreFair(~weakMask) = -inf;
+        [~,kFair] = max(scoreFair);
+        ueFair = ueIdx(kFair);
+    else
+        ueFair = ueBest;
+    end
+end
+
+function weakMask = getWeakMask(s)
+
+    if isempty(s)
+        weakMask = false(size(s));
+        return;
+    end
+
+    sVal = double(s(:));
+    thresh = prctile(sVal, 20);
+    weakMask = sVal <= thresh;
 end

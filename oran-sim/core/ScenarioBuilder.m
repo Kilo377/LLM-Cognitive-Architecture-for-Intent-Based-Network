@@ -34,7 +34,7 @@ if numCell == 1
 else
     gNBPos(1,:) = [0 0 25];
 
-    radius = 250;
+    radius = 300;
     angles = linspace(0,2*pi,numCell);
     angles(end) = [];
 
@@ -50,7 +50,7 @@ scenario.topology.gNBPos = gNBPos;
 %% =====================================================
 % UE Initial Positions
 %% =====================================================
-areaR = 400;
+areaR = 500;
 
 theta = 2*pi*rand(numUE,1);
 r     = areaR*sqrt(rand(numUE,1));

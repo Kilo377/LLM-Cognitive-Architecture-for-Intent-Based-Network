@@ -34,8 +34,8 @@ classdef BeamformingModel
         function obj = BeamformingModel(varargin)
             p = inputParser;
             addParameter(p,'numBeamPerCell',8);
-            addParameter(p,'mainLobeGain_dB',12);
-            addParameter(p,'sideLobeGain_dB',-3);
+            addParameter(p,'mainLobeGain_dB',9);
+            addParameter(p,'sideLobeGain_dB',0);
             addParameter(p,'beamwidth3dB_deg',20);
             addParameter(p,'defaultPolicy',"slightly_suboptimal");
             addParameter(p,'mismatchPenalty_dB',4);

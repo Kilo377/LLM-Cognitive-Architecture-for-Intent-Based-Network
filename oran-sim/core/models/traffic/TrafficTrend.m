@@ -6,9 +6,9 @@ classdef TrafficTrend < handle
         startSlot = 300
         endSlot = 900
 
-        loadRange = [1.0 2.2]
-        heavyMulRange = [1.0 1.8]
-        activeUERange = [0.3 1.0]
+        loadRange = [1.2 2.6]
+        heavyMulRange = [1.0 2.1]
+        activeUERange = [0.5 1.0]
 
         burstOnScaleRange = [1.0 1.6]
         burstOffScaleRange = [1.0 0.6]

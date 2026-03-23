@@ -4,8 +4,8 @@ classdef TrafficDynamics < handle
     properties
         enable logical = true
         periodRange = [300 500]
-        amplitude = 0.4
-        noiseStd = 0.05
+        amplitude = 0.6
+        noiseStd = 0.08
 
         stream
 

@@ -150,9 +150,9 @@ classdef TrafficModel
             % Base arrival rates (pkt/s)
             % =========================
             % Keep these moderate. Use overloadFactor to push mild congestion.
-            obj.baseRate_embb  = 220;
-            obj.baseRate_urllc = 55;
-            obj.baseRate_mmtc  = 22;
+            obj.baseRate_embb  = 260;
+            obj.baseRate_urllc = 70;
+            obj.baseRate_mmtc  = 30;
 
             % =========================
             % Packet sizes (bits)
@@ -162,14 +162,14 @@ classdef TrafficModel
             obj.urllcPktSize    = 3e4;
             obj.mmtcPktSize     = 2e3;
 
-            obj.urllcDeadlineBase = 8;
-            obj.mmtcDeadlineBase  = 200;
+            obj.urllcDeadlineBase = 6;
+            obj.mmtcDeadlineBase  = 120;
 
             % =========================
             % Buffer (mild congestion needs finite buffer)
             % =========================
-            obj.maxBufferBitsPerUE = 30e6;
-            obj.maxPacketsPerUE    = 4000;
+            obj.maxBufferBitsPerUE = 15e6;
+            obj.maxPacketsPerUE    = 2200;
 
             % =========================
             % Profile types

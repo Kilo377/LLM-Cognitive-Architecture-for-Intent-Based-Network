@@ -4,8 +4,8 @@ classdef RadioDynamics < handle
     properties
         enable logical = true
         periodRange = [300 500]
-        amplitude = 0.4
-        noiseStd = 0.05
+        amplitude = 0.7
+        noiseStd = 0.10
 
         stream
 

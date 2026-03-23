@@ -35,18 +35,19 @@ classdef RadioModel < handle
         temperature_K  = 290
 
         % Load
-        interfMinLoad = 0.05
+        interfMinLoad = 0.15
         loadSmoothFactor = 0.8
 
         % Coupling (relative competition)
-        kTxExp   = 0.35
+        kTxExp   = 0.70
         kBwExp   = 0.8
-        kLoadExp = 1.8
+        kLoadExp = 2.8
         edgeBoost = 1.8
+        leakFrac = 0.05
 
         % Absolute leakage coupling (NEW)
         absLeakEnable = true
-        absLeakAlpha  = 0.45          % strength vs avg Tx shift
+        absLeakAlpha  = 0.90          % strength vs avg Tx shift
         absLeakRefTx_dBm = []         % baseline reference, auto init
 
         % SINR compression
@@ -227,8 +228,10 @@ classdef RadioModel < handle
 
                     pW = 10.^((rsrp(u,c)-30)/10);
 
-                    % PRB overlap
-                    overlap = min(load(s), load(c));
+                    % PRB overlap (keep a floor for leakage)
+                    overlap = sqrt(load(s) * load(c));
+                    overlap = max(overlap, 0.3);
+                    overlap = min(overlap, 1.0);
 
                     % edge boost
                     if rsrp(u,s) < median(rsrp(u,:))
@@ -239,6 +242,8 @@ classdef RadioModel < handle
 
                     interfW = interfW + ...
                         pW * interfScale(c) * overlap * edgeFactor;
+
+                    interfW = interfW + pW * obj.leakFrac;
                 end
 
                 % apply absolute leakage scaling

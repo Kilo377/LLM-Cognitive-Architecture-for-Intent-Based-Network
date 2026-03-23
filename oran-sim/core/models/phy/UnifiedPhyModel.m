@@ -17,9 +17,9 @@ classdef UnifiedPhyModel
 
         % NR-like mapping
         sinrThresholdTable
-        sinrOffset_dB = 5
-        blerFloor = 0.02
-        blerSlopeBase = 1.2
+        sinrOffset_dB = 7
+        blerFloor = 0.04
+        blerSlopeBase = 1.4
         randomStdFactor = 0.01   % 轻微随机幅度
 
         useBernoulliSuccess = false
@@ -186,7 +186,7 @@ classdef UnifiedPhyModel
             [Qm, R] = localMcsToModCod(mcs);
 
             Nre = 12 * 14;
-            overhead = 0.25;
+            overhead = 0.30;
             NreEff = floor(Nre * (1-overhead));
 
             tbs_bits = floor(numPRB * NreEff * Qm * R);

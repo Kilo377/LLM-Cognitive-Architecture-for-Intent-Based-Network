@@ -1,4 +1,4 @@
-function run_xapp_baseline_kpi()
+    function run_xapp_baseline_kpi()
 
     if exist('setup_path','file') ~= 2
         runDir = fileparts(mfilename('fullpath'));
@@ -48,6 +48,8 @@ function run_xapp_baseline_kpi()
     instMeanSinr = nan(slotCount,1);
     instInterf = nan(slotCount,1);
 
+    sampleEvery = 100;
+
     for s = 1:slotCount
         state = kernel.ctx.state;
         [ric, action, ~] = ric.step(state);
@@ -84,9 +86,15 @@ function run_xapp_baseline_kpi()
         instMeanSinr(s) = computeInstantMeanSinr(kernel.ctx);
         instInterf(s) = computeInstantInterf(kernel.ctx);
 
-        if mod(s, 200) == 0
-            fprintf('[DEBUG][slot=%d][instant] thr=%.2f drop=%.4f bler=%.4f prbUtil=%.3f sinr=%.2f interf=%.2f\n', ...
-                s, instThr(s), instDrop(s), instBler(s), instPrbUtil(s), instMeanSinr(s), instInterf(s));
+        if mod(s, sampleEvery) == 0
+            rsrpLine = '';
+            if isprop(kernel.ctx,'rsrp_dBm') && ~isempty(kernel.ctx.rsrp_dBm)
+                r = double(kernel.ctx.rsrp_dBm(:));
+                rsrpLine = sprintf(' rsrp[min/p10/mean/p90/max]=%.1f/%.1f/%.1f/%.1f/%.1f', ...
+                    min(r), prctile(r,10), mean(r), prctile(r,90), max(r));
+            end
+            fprintf('[TRACE][slot=%d t=%.3f] thr=%.2f drop=%.4f bler=%.4f sinr=%.2f p10=%.2f instDrop=%.3f interf=%.2f%s\n', ...
+                s, t_s(s), thr(s), drop(s), bler(s), meanSinr(s), p10Sinr(s), instDrop(s), interf(s), rsrpLine);
         end
     end
 

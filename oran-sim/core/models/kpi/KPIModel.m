@@ -96,7 +96,16 @@ classdef KPIModel
                 interf = interf(isfinite(interf));
 
                 if ~isempty(interf)
-                    ctx.tmp.kpi.resource.meanInterference_dBm = mean(interf);
+                    meanInterfW = mean(10.^((interf - 30) / 10));
+                    noiseW = 0;
+                    if isfield(ctx,'thermalNoiseCell_dBm')
+                        noise_dBm = ctx.thermalNoiseCell_dBm;
+                        if ~isempty(noise_dBm)
+                            noiseW = mean(10.^((noise_dBm(:) - 30) / 10));
+                        end
+                    end
+                    meanTotalW = meanInterfW + noiseW;
+                    ctx.tmp.kpi.resource.meanInterference_dBm = 10*log10(max(meanTotalW, 1e-20)) + 30;
                     ctx.tmp.kpi.resource.interfStd = std(interf);
                 else
                     ctx.tmp.kpi.resource.meanInterference_dBm = -inf;

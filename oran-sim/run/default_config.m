@@ -39,11 +39,11 @@ cfg.radio.bandwidthHz = 20e6;
 cfg.traffic = struct();
 
 % 轻度拥塞控制
-cfg.traffic.overloadFactor = 1.25;
+cfg.traffic.overloadFactor = 1.6;
 
 % UE traffic class 比例
-cfg.traffic.silentRatio = 0.15;
-cfg.traffic.heavyRatio  = 0.20;
+cfg.traffic.silentRatio = 0.08;
+cfg.traffic.heavyRatio  = 0.28;
 
 % heavy 用户倍率
 cfg.traffic.heavyMultiplierE = 6.0;
@@ -72,7 +72,7 @@ cfg.dynamic = struct();
 cfg.dynamic.enable = true;
 cfg.dynamic.profiles = ["traffic","mobility","radio"];
 cfg.dynamic.periodRange = [300 500];
-cfg.dynamic.intensity = "medium";
+cfg.dynamic.intensity = "high";
 cfg.dynamic.seed = 2026;
 
 % ==============================
@@ -82,12 +82,12 @@ cfg.trend = struct();
 cfg.trend.enable = true;
 cfg.trend.startSlot = 300;
 cfg.trend.endSlot = 1600;
-cfg.trend.loadRange = [1.0 2.2];
-cfg.trend.heavyMulRange = [1.0 1.8];
-cfg.trend.activeUERange = [0.3 1.0];
+cfg.trend.loadRange = [1.2 2.6];
+cfg.trend.heavyMulRange = [1.0 2.1];
+cfg.trend.activeUERange = [0.5 1.0];
 cfg.trend.edgeBiasRange = [0.0 1.0];
-cfg.trend.burstOnScaleRange = [1.0 1.6];
-cfg.trend.burstOffScaleRange = [1.0 0.6];
+cfg.trend.burstOnScaleRange = [1.1 1.8];
+cfg.trend.burstOffScaleRange = [1.0 0.5];
 
 
 

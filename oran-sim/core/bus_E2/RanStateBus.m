@@ -74,6 +74,17 @@ classdef RanStateBus
             state.radio.thermalNoise_dBm      = 0;
             state.radio.thermalNoiseCell_dBm  = zeros(numCell,1);
             state.radio.noiseFigure_dB        = 0;
+            state.radio.dynamic.interferenceScale = 1.0;
+            state.radio.dynamic.shadowingOffset_dB = 0.0;
+
+            %% =======================
+            % MOBILITY (global)
+            %% =======================
+            state.mobility.dynamic.speedScale = 1.0;
+            state.mobility.dynamic.directionJitter = 0.0;
+            state.mobility.dynamic.pauseProbability = 0.0;
+            state.mobility.trend.factor = 0.0;
+            state.mobility.trend.edgeBias = 0.0;
 
             %% =======================
             % CHANNEL
@@ -124,6 +135,43 @@ classdef RanStateBus
             state.kpi.prbUtilPerCell = zeros(numCell,1);
 
             %% =======================
+            % TRAFFIC (dynamic + trend + drop)
+            %% =======================
+            state.traffic.dynamic.overloadFactor = 1.0;
+            state.traffic.dynamic.heavyMulE = 1.0;
+            state.traffic.dynamic.heavyMulU = 1.0;
+            state.traffic.dynamic.heavyMulM = 1.0;
+            state.traffic.dynamic.silentMulE = 1.0;
+            state.traffic.dynamic.silentMulU = 1.0;
+            state.traffic.dynamic.silentMulM = 1.0;
+            state.traffic.dynamic.burstOn = zeros(1,3);
+            state.traffic.dynamic.burstOff = zeros(1,3);
+
+            state.traffic.trend.factor = 0.0;
+            state.traffic.trend.overloadScale = 1.0;
+            state.traffic.trend.heavyMulScale = 1.0;
+            state.traffic.trend.activeRatio = 1.0;
+            state.traffic.trend.burstOnScale = 1.0;
+            state.traffic.trend.burstOffScale = 1.0;
+
+            state.traffic.dropThisSlot.countTotal = 0;
+            state.traffic.dropThisSlot.bitsTotal = 0;
+            state.traffic.dropThisSlot.countOverflow = 0;
+            state.traffic.dropThisSlot.bitsOverflow = 0;
+            state.traffic.dropThisSlot.countExpired = 0;
+            state.traffic.dropThisSlot.bitsExpired = 0;
+            state.traffic.dropThisSlot.countURLLC = 0;
+            state.traffic.dropThisSlot.bitsURLLC = 0;
+
+            %% =======================
+            % QOS (per-slot)
+            %% =======================
+            state.qos.arrivedBits = zeros(3,1);
+            state.qos.servedBits = zeros(3,1);
+            state.qos.droppedBits = zeros(3,1);
+            state.qos.droppedCount = zeros(3,1);
+
+            %% =======================
             % DEBUG TRACE (NEW)
             %% =======================
             state.debug.scheduler.selectedUE = zeros(numCell,1);
@@ -150,4 +198,3 @@ classdef RanStateBus
         end
     end
 end
-

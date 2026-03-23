@@ -112,6 +112,16 @@ classdef RanKernelNR
             [obj.mobilityModel, pos2d] = obj.mobilityModel.step(obj.ctx.dt);
             obj.ctx.uePos(:,1:2) = pos2d;
 
+            if ~isfield(obj.ctx.tmp,'mobility') || isempty(obj.ctx.tmp.mobility)
+                obj.ctx.tmp.mobility = struct();
+            end
+            if isprop(obj.mobilityModel,'lastDynamic') && ~isempty(obj.mobilityModel.lastDynamic)
+                obj.ctx.tmp.mobility.dynamic = obj.mobilityModel.lastDynamic;
+            end
+            if isprop(obj.mobilityModel,'lastTrend') && ~isempty(obj.mobilityModel.lastTrend)
+                obj.ctx.tmp.mobility.trend = obj.mobilityModel.lastTrend;
+            end
+
             if dbgOn && dbgThisSlot
                 obj.printChainSnapshot("After Mobility", obj.ctx);
             end
@@ -485,6 +495,19 @@ classdef RanKernelNR
                 end
                 if isfield(tr,'qosThisSlot')
                     obj.ctx.tmp.debug.traffic.qosThisSlot = tr.qosThisSlot;
+                end
+
+                if ~isfield(obj.ctx.tmp,'traffic') || isempty(obj.ctx.tmp.traffic)
+                    obj.ctx.tmp.traffic = struct();
+                end
+                if isfield(tr,'dynamic')
+                    obj.ctx.tmp.traffic.dynamic = tr.dynamic;
+                end
+                if isfield(tr,'trend')
+                    obj.ctx.tmp.traffic.trend = tr.trend;
+                end
+                if isfield(tr,'dropThisSlot')
+                    obj.ctx.tmp.traffic.dropThisSlot = tr.dropThisSlot;
                 end
             end
 

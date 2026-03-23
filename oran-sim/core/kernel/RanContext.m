@@ -380,6 +380,15 @@ classdef RanContext < handle
                 s.ue.bler = obj.tmp.lastBLERPerUE;
             end
 
+            if isfield(obj.tmp,'mobility')
+                if isfield(obj.tmp.mobility,'dynamic')
+                    s.mobility.dynamic = obj.tmp.mobility.dynamic;
+                end
+                if isfield(obj.tmp.mobility,'trend')
+                    s.mobility.trend = obj.tmp.mobility.trend;
+                end
+            end
+
             s.cell.txPower_dBm = obj.txPowerCell_dBm;
             s.cell.bandwidthHz = obj.bandwidthHzPerCell;
             s.cell.numPRB      = obj.numPRBPerCell;
@@ -410,6 +419,45 @@ classdef RanContext < handle
                 s.channel.interference_dBm = obj.tmp.channel.interference_dBm;
             end
             s.channel.noise_dBm = obj.thermalNoiseCell_dBm;
+
+            if isfield(obj.tmp,'debug') && isfield(obj.tmp.debug,'trace') && isfield(obj.tmp.debug.trace,'radio')
+                tr = obj.tmp.debug.trace.radio;
+                if isfield(tr,'cell')
+                    if isfield(tr.cell,'dynamicInterfScale')
+                        s.radio.dynamic.interferenceScale = tr.cell.dynamicInterfScale;
+                    end
+                    if isfield(tr.cell,'dynamicShadowOffset_dB')
+                        s.radio.dynamic.shadowingOffset_dB = tr.cell.dynamicShadowOffset_dB;
+                    end
+                end
+            end
+
+            if isfield(obj.tmp,'traffic')
+                if isfield(obj.tmp.traffic,'dynamic')
+                    s.traffic.dynamic = obj.tmp.traffic.dynamic;
+                end
+                if isfield(obj.tmp.traffic,'trend')
+                    s.traffic.trend = obj.tmp.traffic.trend;
+                end
+                if isfield(obj.tmp.traffic,'dropThisSlot')
+                    s.traffic.dropThisSlot = obj.tmp.traffic.dropThisSlot;
+                end
+            end
+
+            if isfield(obj.tmp,'qos')
+                if isfield(obj.tmp.qos,'arrivedBits')
+                    s.qos.arrivedBits = obj.tmp.qos.arrivedBits;
+                end
+                if isfield(obj.tmp.qos,'servedBits')
+                    s.qos.servedBits = obj.tmp.qos.servedBits;
+                end
+                if isfield(obj.tmp.qos,'droppedBits')
+                    s.qos.droppedBits = obj.tmp.qos.droppedBits;
+                end
+                if isfield(obj.tmp.qos,'droppedCount')
+                    s.qos.droppedCount = obj.tmp.qos.droppedCount;
+                end
+            end
 
             if isfield(obj.tmp,'kpi') && isfield(obj.tmp.kpi,'qos')
                 s.kpi.qos = obj.tmp.kpi.qos;

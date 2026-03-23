@@ -9,6 +9,7 @@ function run_xapp_drop_vs_baseline()
 
     cfg = default_config();
     cfg.debug.enable = false;
+    cfg.debug.enableXApp = true;
     cfg.sim.slotPerEpisode = 2000;
     cfg.nearRT.xappRoot = fullfile(rootDir, "xapps");
 

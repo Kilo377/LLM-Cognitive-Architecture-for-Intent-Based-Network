@@ -45,6 +45,7 @@ classdef UEMobilityModel
         trend
         edgeBias = 0
         lastTrend
+        lastDynamic
     end
 
     methods
@@ -224,6 +225,10 @@ classdef UEMobilityModel
                 directionJitter = dyn.directionJitter;
                 pauseProb = dyn.pauseProbability;
             end
+
+            obj.lastDynamic = struct('speedScale', speedScale, ...
+                'directionJitter', directionJitter, ...
+                'pauseProbability', pauseProb);
 
             obj.speed = obj.baseSpeed * speedScale;
 

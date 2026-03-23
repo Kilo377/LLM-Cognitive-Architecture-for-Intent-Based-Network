@@ -9,6 +9,10 @@ function action = xapp_drop_reducer(input)
 
     [state, slot] = getState(obs);
 
+    if isfield(input,'debug') && isfield(input.debug,'enableXApp')
+        state.debugEnable = logical(input.debug.enableXApp);
+    end
+
     servingCell = ones(numUE,1);
     if isfield(obs,'ue') && isfield(obs.ue,'servingCell')
         servingCell = obs.ue.servingCell(:);

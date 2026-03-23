@@ -13,10 +13,13 @@ function run_nonrt_general()
 
     cfg.nearRT.xappRoot = fullfile(rootDir, "xapps");
 
-    cfg.nonRT.triggerTime_s = 1.0;
+    cfg.nonRT.triggerTime_s = 0.5;
     cfg.nonRT.timeout_s = 30;
     cfg.debug.enableNonRT = true;
     cfg.debug.nonRTEvery = 100;
+    cfg.debug.enableXApp = true;
+
+    startTime_s = 0.5;
 
     scenario = ScenarioBuilder(cfg);
     kernel   = RanKernelNR(cfg, scenario);
@@ -89,20 +92,25 @@ function run_nonrt_general()
         end
     end
 
-    fprintf('\n===== Non-RT General KPI Summary =====\n');
-    fprintf('Throughput (Mbps): %.2f\n', mean(thr, 'omitnan'));
-    fprintf('Fairness (Jain): %.3f\n', mean(fairness, 'omitnan'));
-    fprintf('Top10Share: %.3f\n', mean(top10, 'omitnan'));
-    fprintf('DropRatio: %.4f\n', mean(drop, 'omitnan'));
-    fprintf('Mean BLER: %.4f\n', mean(bler, 'omitnan'));
-    fprintf('PRB Util Mean: %.3f\n', mean(prbUtil, 'omitnan'));
-    fprintf('Congestion Index: %.3f\n', mean(cong, 'omitnan'));
-    fprintf('Bit/J: %.1f\n', mean(bitj, 'omitnan'));
-    fprintf('Energy (J): %.1f\n', mean(energy, 'omitnan'));
-    fprintf('Mean Interference (dBm): %.2f\n', mean(interf, 'omitnan'));
+    mask = t_s >= startTime_s;
+    if ~any(mask)
+        mask = true(size(t_s));
+    end
+
+    fprintf('\n===== Non-RT General KPI Summary (t>=%.1fs) =====\n', startTime_s);
+    fprintf('Throughput (Mbps): %.2f\n', mean(thr(mask), 'omitnan'));
+    fprintf('Fairness (Jain): %.3f\n', mean(fairness(mask), 'omitnan'));
+    fprintf('Top10Share: %.3f\n', mean(top10(mask), 'omitnan'));
+    fprintf('DropRatio: %.4f\n', mean(drop(mask), 'omitnan'));
+    fprintf('Mean BLER: %.4f\n', mean(bler(mask), 'omitnan'));
+    fprintf('PRB Util Mean: %.3f\n', mean(prbUtil(mask), 'omitnan'));
+    fprintf('Congestion Index: %.3f\n', mean(cong(mask), 'omitnan'));
+    fprintf('Bit/J: %.1f\n', mean(bitj(mask), 'omitnan'));
+    fprintf('Energy (J): %.1f\n', mean(energy(mask), 'omitnan'));
+    fprintf('Mean Interference (dBm): %.2f\n', mean(interf(mask), 'omitnan'));
     fprintf('SINR mean/p10/p50/p90 (dB): %.2f / %.2f / %.2f / %.2f\n', ...
-        mean(meanSinr, 'omitnan'), mean(p10Sinr, 'omitnan'), ...
-        mean(p50Sinr, 'omitnan'), mean(p90Sinr, 'omitnan'));
+        mean(meanSinr(mask), 'omitnan'), mean(p10Sinr(mask), 'omitnan'), ...
+        mean(p50Sinr(mask), 'omitnan'), mean(p90Sinr(mask), 'omitnan'));
 
     printLastConflict(ric);
 

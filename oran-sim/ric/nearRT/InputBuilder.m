@@ -20,6 +20,13 @@ function input = InputBuilder(obs, cfg, ctx)
         input.context = struct();
     end
 
+    % debug
+    input.debug = struct();
+    input.debug.enableXApp = false;
+    if isfield(input.config, "debug") && isfield(input.config.debug, "enableXApp")
+        input.debug.enableXApp = logical(input.config.debug.enableXApp);
+    end
+
     % 兜底字段
     if ~isfield(input.context, "time")
         input.context.time = [];

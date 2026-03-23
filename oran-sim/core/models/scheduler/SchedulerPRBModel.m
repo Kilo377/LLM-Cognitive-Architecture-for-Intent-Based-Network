@@ -291,6 +291,8 @@ classdef SchedulerPRBModel
                 return;
             end
 
+            weightUE = obj.getWeightUE(ctx, ueSet);
+
             if selU > 0
 
                 prbSel = max(1, floor(totalPRB * obj.actionBoost));
@@ -299,18 +301,51 @@ classdef SchedulerPRBModel
                 prbRem = totalPRB - prbSel;
 
                 others = ueSet(ueSet ~= selU);
+                otherWeight = weightUE(ueSet ~= selU);
 
-                [ctx, rrList, rrAlloc] = obj.rrAllocate(ctx, c, others, prbRem);
+                [others, otherWeight] = obj.sortByWeight(others, otherWeight);
+                [ctx, rrList, rrAlloc] = obj.weightedAllocate(ctx, c, others, otherWeight, prbRem);
 
                 schedUE  = [selU; rrList(:)];
                 prbAlloc = [prbSel; rrAlloc(:)];
 
             else
-                [ctx, schedUE, prbAlloc] = obj.rrAllocate(ctx, c, ueSet, totalPRB);
+                [ueSet, weightUE] = obj.sortByWeight(ueSet, weightUE);
+                [ctx, schedUE, prbAlloc] = obj.weightedAllocate(ctx, c, ueSet, weightUE, totalPRB);
             end
         end
 
-        function [ctx, ueList, alloc] = rrAllocate(obj, ctx, c, ueSet, prbBudget)
+        function [ueSet, weightUE] = sortByWeight(~, ueSet, weightUE)
+            if isempty(ueSet) || isempty(weightUE)
+                return;
+            end
+            if numel(weightUE) ~= numel(ueSet)
+                weightUE = ones(size(ueSet));
+            end
+            [~, order] = sort(weightUE, 'descend');
+            ueSet = ueSet(order);
+            weightUE = weightUE(order);
+        end
+
+        function w = getWeightUE(~, ctx, ueSet)
+            numUE = numel(ctx.servingCell);
+            if numUE <= 0
+                numUE = max(ueSet);
+            end
+            w = ones(numUE,1);
+            if isprop(ctx,'ctrl') && isfield(ctx.ctrl,'weightUE')
+                v = ctx.ctrl.weightUE;
+                if isnumeric(v) && numel(v) == numUE
+                    w = max(double(v(:)), 0);
+                end
+            end
+            w = w(ueSet);
+            if isempty(w) || all(w <= 0)
+                w = ones(size(ueSet));
+            end
+        end
+
+        function [ctx, ueList, alloc] = weightedAllocate(obj, ctx, c, ueSet, weightUE, prbBudget)
 
             ueList = [];
             alloc  = [];
@@ -319,23 +354,37 @@ classdef SchedulerPRBModel
                 return;
             end
 
-            ptr = ctx.rrPtr(c);
-
-            while prbBudget > 0
-
-                idx = mod(ptr-1, numel(ueSet)) + 1;
-                u   = ueSet(idx);
-
-                prb = min(obj.prbChunk, prbBudget);
-
-                ueList(end+1,1) = u; %#ok<AGROW>
-                alloc(end+1,1)  = prb; %#ok<AGROW>
-
-                prbBudget = prbBudget - prb;
-                ptr = ptr + 1;
+            if nargin < 5 || isempty(weightUE) || numel(weightUE) ~= numel(ueSet)
+                weightUE = ones(numel(ueSet),1);
+            end
+            weightUE = max(weightUE(:), 0);
+            if all(weightUE == 0)
+                weightUE = ones(numel(ueSet),1);
             end
 
-            ctx.rrPtr(c) = ptr;
+            wsum = sum(weightUE);
+            baseAlloc = floor(prbBudget * (weightUE / wsum));
+            baseAlloc = min(baseAlloc, prbBudget);
+
+            prbUsed = sum(baseAlloc);
+            rem = prbBudget - prbUsed;
+
+            if rem > 0
+                [~, order] = sort(weightUE, 'descend');
+                idx = 1;
+                while rem > 0
+                    j = order(idx);
+                    baseAlloc(j) = baseAlloc(j) + 1;
+                    rem = rem - 1;
+                    idx = idx + 1;
+                    if idx > numel(order)
+                        idx = 1;
+                    end
+                end
+            end
+
+            ueList = ueSet(:);
+            alloc = baseAlloc(:);
         end
 
         function [ueList2, alloc2] = aggregateAlloc(~, ueList, alloc)

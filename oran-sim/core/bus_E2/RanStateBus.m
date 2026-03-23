@@ -119,6 +119,13 @@ classdef RanStateBus
             state.events.rlf.lastTo     = 0;
 
             %% =======================
+            % SCHEDULING (NEW)
+            %% =======================
+            state.scheduling.weightUE = ones(numUE,1);
+            state.scheduling.weightStats = struct( ...
+                'min', 1.0, 'p10', 1.0, 'mean', 1.0, 'p90', 1.0, 'max', 1.0, 'std', 0.0);
+
+            %% =======================
             % KPI
             %% =======================
             state.kpi.throughputBitPerUE = zeros(numUE,1);

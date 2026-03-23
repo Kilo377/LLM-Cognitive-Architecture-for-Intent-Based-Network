@@ -50,6 +50,21 @@ classdef ActionApplierModel
                 ctx.ctrl = obj.decodeActionToCtrl(ctx.ctrl, action, numCell, numUE);
             end
 
+            %=====================================================
+            % 2.1) Random weightUE when not provided by action
+            %=====================================================
+            if ~hasAction || ~isfield(action,'scheduling') || ~isfield(action.scheduling,'weightUE')
+                randAmp = 0.5;
+                if isfield(ctx.cfg,'ctrl') && isfield(ctx.cfg.ctrl,'weightUE') && ...
+                        isfield(ctx.cfg.ctrl.weightUE,'randAmp')
+                    ra = ctx.cfg.ctrl.weightUE.randAmp;
+                    if isnumeric(ra) && isscalar(ra)
+                        randAmp = max(0, double(ra));
+                    end
+                end
+                ctx.ctrl.weightUE = 1.0 + randAmp * rand(numUE,1);
+            end
+
             % derived convenience flag
             ss = round(ctx.ctrl.cellSleepState(:));
             ss = min(max(ss,0),2);

@@ -26,6 +26,7 @@ cfg.scenario.numUE   = 40;
 % ==============================
 cfg.ctrl = struct();
 cfg.ctrl.selectedUEPolicy = "none";
+cfg.ctrl.weightUE = struct('randAmp', 0.5);
 
 % ==============================
 % RADIO BASELINE

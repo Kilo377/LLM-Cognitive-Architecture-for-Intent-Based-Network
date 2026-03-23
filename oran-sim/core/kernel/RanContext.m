@@ -420,6 +420,20 @@ classdef RanContext < handle
             end
             s.channel.noise_dBm = obj.thermalNoiseCell_dBm;
 
+            if isprop(obj,'ctrl') && isfield(obj.ctrl,'weightUE')
+                w = double(obj.ctrl.weightUE(:));
+                if ~isempty(w)
+                    s.scheduling.weightUE = w;
+                    s.scheduling.weightStats = struct();
+                    s.scheduling.weightStats.min = min(w);
+                    s.scheduling.weightStats.p10 = prctile(w,10);
+                    s.scheduling.weightStats.mean = mean(w);
+                    s.scheduling.weightStats.p90 = prctile(w,90);
+                    s.scheduling.weightStats.max = max(w);
+                    s.scheduling.weightStats.std = std(w);
+                end
+            end
+
             if isfield(obj.tmp,'debug') && isfield(obj.tmp.debug,'trace') && isfield(obj.tmp.debug.trace,'radio')
                 tr = obj.tmp.debug.trace.radio;
                 if isfield(tr,'cell')

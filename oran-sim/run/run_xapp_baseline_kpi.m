@@ -103,11 +103,14 @@
         mask = true(size(t_s));
     end
 
+    baseThr = mean(thr(mask), 'omitnan');
+    baseDrop = mean(drop(mask), 'omitnan');
+
     fprintf('\n===== Baseline KPI Summary (No xApps, t>=%.1fs) =====\n', startTime_s);
-    fprintf('Throughput (Mbps): %.2f\n', mean(thr(mask), 'omitnan'));
+    fprintf('Throughput (Mbps): %.2f\n', baseThr);
     fprintf('Fairness (Jain): %.3f\n', mean(fairness(mask), 'omitnan'));
     fprintf('Top10Share: %.3f\n', mean(top10(mask), 'omitnan'));
-    fprintf('DropRatio: %.4f\n', mean(drop(mask), 'omitnan'));
+    fprintf('DropRatio: %.4f\n', baseDrop);
     fprintf('Mean BLER: %.4f\n', mean(bler(mask), 'omitnan'));
     fprintf('PRB Util Mean: %.3f\n', mean(prbUtil(mask), 'omitnan'));
     fprintf('Congestion Index: %.3f\n', mean(cong(mask), 'omitnan'));
@@ -122,6 +125,11 @@
         fprintf('\n===== Baseline KPI Full Dump =====\n');
         disp(kernel.ctx.tmp.kpi);
     end
+
+    writeBaselineCsv(fullfile(rootDir, "xapps", "xapp_fairness_no_thr_loss", "baseline.csv"), ...
+        "throughput_Mbps", baseThr);
+    writeBaselineCsv(fullfile(rootDir, "xapps", "xapp_fairness_no_drop_loss", "baseline.csv"), ...
+        "dropRatio", baseDrop);
 
     figure('Name','Baseline KPI (No xApps)');
     tiledlayout(4,3);
@@ -215,6 +223,26 @@ function v = getField(s, path, defaultValue)
     else
         v = defaultValue;
     end
+end
+
+function writeBaselineCsv(filePath, metricName, value)
+
+    if ~isfinite(value)
+        fprintf('[WARN] baseline value for %s is not finite, skip write: %s\n', metricName, filePath);
+        return;
+    end
+
+    fid = fopen(filePath, 'w');
+    if fid < 0
+        error('run_xapp_baseline_kpi:BaselineWriteFailed', ...
+            'Unable to write baseline csv: %s', filePath);
+    end
+
+    fprintf(fid, 'metric,value\n');
+    fprintf(fid, '%s,%.6f\n', metricName, value);
+    fclose(fid);
+
+    fprintf('[INFO] baseline csv written: %s\n', filePath);
 end
 
 function thr = computeInstantThroughput(ctx)

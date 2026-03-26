@@ -5,20 +5,13 @@ SMO 主入口：读取报告、选择意图、调用LLM并写出policy
 """
 
 import argparse
-import json
 from pathlib import Path
 from typing import Any, Dict, List
 
 from a1_reader import load_report
 from intent_input import get_intent_text
-from policy_orchestration import (
-    build_prompt,
-    parse_policy,
-    write_policy,
-    default_policy_path,
-)
-from baseline_reasoning import run_reasoning
-from llm.api_manager import APIManager
+from policy_orchestration import write_policy, default_policy_path
+from proposed_algorithm import run as run_proposed, load_config
 
 
 def default_report_path() -> Path:
@@ -185,18 +178,6 @@ def main(ran_intent: str) -> None:
         help="报告 JSON 路径（默认 oran-sim/bus_A1/non_rt_report.json）",
     )
     parser.add_argument(
-        "--provider",
-        type=str,
-        default="ollama",
-        help="LLM provider",
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=None,
-        help="LLM model",
-    )
-    parser.add_argument(
         "--policy",
         type=str,
         default=str(default_policy_path()),
@@ -206,6 +187,12 @@ def main(ran_intent: str) -> None:
         "--print-report",
         action="store_true",
         help="打印报告内容",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="配置文件路径（默认 smo/config.json）",
     )
     args = parser.parse_args()
 
@@ -221,18 +208,45 @@ def main(ran_intent: str) -> None:
 
     intent = get_intent_text(None)
 
-    parsed = run_reasoning(
-        intent, report, report.get("xappPool", []), args.provider, args.model
-    )
+    cfg = load_config(Path(args.config)) if args.config else load_config()
+    parsed = run_proposed(intent, report, report.get("xappPool", []), cfg)
     policy = parsed.get("policy", {"enabledXApps": []})
     reasoning = parsed.get("reasoning", "")
 
-    if reasoning:
-        print(f"LLM 选择理由: {reasoning}")
+    if reasoning == "graph":
+        graph_out = parsed.get("graph", {})
+        targets = graph_out.get("targets", [])
+        paths = graph_out.get("paths", [])
+        print("===== Graph Reasoning Targets =====")
+        print(targets if targets else "(empty)")
+        print("===== Graph Reasoning Paths =====")
+        if paths:
+            for p in paths:
+                print(f"{p['xapp']} -> {p['parameter']} -> {p['kpi']}")
+        else:
+            print("(empty)")
+        selected = graph_out.get("selected")
+        selected_list = graph_out.get("selected_list", [])
+        if selected_list:
+            print(f"Graph 选择结果: {selected_list}")
+        else:
+            print(f"Graph 选择结果: {selected if selected else '(none)'}")
+        graph_reasoning = graph_out.get("reasoning", "")
+        if graph_reasoning:
+            print(f"Graph 选择理由: {graph_reasoning}")
+        else:
+            print("Graph 选择理由: (空)")
+        llm_resp = graph_out.get("llm_response", "")
+        if llm_resp:
+            print("===== Graph LLM Decision Reasoning =====")
+            print(llm_resp)
     else:
-        print("LLM 选择理由: (空)")
+        if reasoning:
+            print(f"LLM 选择理由: {reasoning}")
+        else:
+            print("LLM 选择理由: (空)")
 
-    write_policy(Path(args.policy), {"policy": policy})
+    write_policy(Path(args.policy), {"policy": policy, "reasoning": reasoning})
     print(f"policy写入成功: {args.policy}")
 
 

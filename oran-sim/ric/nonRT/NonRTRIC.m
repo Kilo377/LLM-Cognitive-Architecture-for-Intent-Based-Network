@@ -17,6 +17,8 @@ classdef NonRTRIC
 
         lastPolicy
         lastPolicyStamp
+        lastConflict
+        existingApplied
 
         debugEnable
         debugEverySlot
@@ -70,6 +72,8 @@ classdef NonRTRIC
             obj.didTrigger = false;
             obj.lastPolicy = struct();
             obj.lastPolicyStamp = 0;
+            obj.lastConflict = struct();
+            obj.existingApplied = false;
 
             obj.debugEnable = false;
             if isfield(cfg,'debug') && isfield(cfg.debug,'enableNonRT')
@@ -109,6 +113,10 @@ classdef NonRTRIC
                 return;
             end
 
+            if ~obj.existingApplied
+                [obj, ric, info] = obj.applyExistingPolicies(ctx, ric, info);
+            end
+
             if obj.getTime(ctx) < obj.triggerTime_s
                 return;
             end
@@ -142,11 +150,12 @@ classdef NonRTRIC
             if strcmp(status, "ok")
                 [policy, valid] = obj.normalizePolicy(policy);
                 if valid
-                    [mergedXApps, conflicts] = obj.handlePolicies(report, policy);
+                    [mergedXApps, mergedKpiFocus, conflicts] = obj.handlePolicies(report, policy);
                     obj.reportConflicts(conflicts);
 
                     mergedPolicy = struct();
                     mergedPolicy.enabledXApps = mergedXApps;
+                    mergedPolicy.kpi_focus = mergedKpiFocus;
 
                     ric = ric.setPolicy(mergedPolicy);
                     obj.lastPolicy = mergedPolicy;
@@ -232,7 +241,7 @@ classdef NonRTRIC
             end
         end
 
-        function [mergedXApps, conflicts] = handlePolicies(obj, report, newPolicy)
+        function [mergedXApps, mergedKpiFocus, conflicts] = handlePolicies(obj, report, newPolicy)
 
             policies = obj.loadExistingPolicies();
 
@@ -249,9 +258,39 @@ classdef NonRTRIC
 
             policies = [policies; newEntry]; %#ok<AGROW>
 
-            [mergedXApps, conflicts] = policy_mitigation_a1(policies);
+            [mergedXApps, mergedKpiFocus, conflicts] = policy_mitigation_a1(policies);
 
             obj.saveExistingPolicies(policies);
+        end
+
+        function [obj, ric, info] = applyExistingPolicies(obj, ctx, ric, info)
+
+            obj.existingApplied = true;
+            policies = obj.loadExistingPolicies();
+            if isempty(policies)
+                return;
+            end
+
+            [mergedXApps, mergedKpiFocus, conflicts] = policy_mitigation_a1(policies);
+            obj.reportConflicts(conflicts);
+
+            if isempty(mergedXApps) && isempty(mergedKpiFocus)
+                return;
+            end
+
+            mergedPolicy = struct();
+            mergedPolicy.enabledXApps = mergedXApps;
+            mergedPolicy.kpi_focus = mergedKpiFocus;
+
+            ric = ric.setPolicy(mergedPolicy);
+            obj.lastPolicy = mergedPolicy;
+            obj.lastPolicyStamp = obj.lastPolicyStamp + 1;
+            info.policyApplied = true;
+            info.policySource = "existing";
+
+            if obj.debugEnable
+                fprintf('[Non-RT RIC] applied existing policy at slot=%d\n', obj.getSlot(ctx));
+            end
         end
 
         function policies = loadExistingPolicies(obj)
@@ -287,12 +326,12 @@ classdef NonRTRIC
 
         function reportConflicts(obj, conflicts)
 
-            if ~obj.debugEnable
-                return;
-            end
+            obj.lastConflict = conflicts;
 
             if isempty(conflicts)
-                fprintf('[Non-RT RIC] conflict report: none\n');
+                if obj.debugEnable
+                    fprintf('[Non-RT RIC] conflict report: none\n');
+                end
                 return;
             end
 
@@ -300,8 +339,8 @@ classdef NonRTRIC
                 fprintf('[Non-RT RIC] KPI conflicts:\n');
                 for i = 1:numel(conflicts.kpi)
                     c = conflicts.kpi(i);
-                    fprintf('  policy=%s vs %s kpi=%s\n', ...
-                        c.policy_a, c.policy_b, strjoin(cellstr(c.kpi(:)), ','));
+                    fprintf('  kpi=%s winner=%s candidates=%s\n', ...
+                        c.kpi, c.winner, strjoin(cellstr(c.policies(:)), ','));
                 end
             end
 
@@ -309,8 +348,8 @@ classdef NonRTRIC
                 fprintf('[Non-RT RIC] xApp conflicts:\n');
                 for i = 1:numel(conflicts.xapp)
                     c = conflicts.xapp(i);
-                    fprintf('  policy=%s vs %s xapp=%s\n', ...
-                        c.policy_a, c.policy_b, strjoin(cellstr(c.xapp(:)), ','));
+                    fprintf('  xapp=%s winner=%s candidates=%s\n', ...
+                        c.xapp, c.winner, strjoin(cellstr(c.policies(:)), ','));
                 end
             end
         end

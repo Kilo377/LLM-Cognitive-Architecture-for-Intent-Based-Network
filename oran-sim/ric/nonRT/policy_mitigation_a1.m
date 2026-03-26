@@ -1,8 +1,9 @@
-function [mergedXApps, conflicts] = policy_mitigation_a1(policies)
+function [mergedXApps, mergedKpiFocus, conflicts] = policy_mitigation_a1(policies)
 %POLICY_MITIGATION_A1 Detect policy conflicts and merge xApps
 
     if nargin < 1 || isempty(policies)
         mergedXApps = string.empty(1,0);
+        mergedKpiFocus = string.empty(1,0);
         conflicts = struct('kpi', [], 'xapp', []);
         return;
     end
@@ -10,6 +11,7 @@ function [mergedXApps, conflicts] = policy_mitigation_a1(policies)
     % Normalize to struct array
     if ~isstruct(policies)
         mergedXApps = string.empty(1,0);
+        mergedKpiFocus = string.empty(1,0);
         conflicts = struct('kpi', [], 'xapp', []);
         return;
     end
@@ -18,8 +20,11 @@ function [mergedXApps, conflicts] = policy_mitigation_a1(policies)
     kpiConflicts = [];
     xappConflicts = [];
 
-    % Merge xApps (active only)
+    % Merge xApps and KPI focus (active only)
     mergedXApps = string.empty(1,0);
+    mergedKpiFocus = string.empty(1,0);
+    kpiMap = containers.Map('KeyType','char','ValueType','any');
+    xappMap = containers.Map('KeyType','char','ValueType','any');
 
     for i = 1:numP
         p = policies(i);
@@ -31,66 +36,61 @@ function [mergedXApps, conflicts] = policy_mitigation_a1(policies)
         end
 
         if isfield(p,'enabledXApps')
-            mergedXApps = [mergedXApps; normalizeStringList(p.enabledXApps)]; %#ok<AGROW>
+            xs = normalizeStringList(p.enabledXApps);
+            mergedXApps = [mergedXApps; xs]; %#ok<AGROW>
+            for xi = 1:numel(xs)
+                key = char(xs(xi));
+                if ~isKey(xappMap, key)
+                    xappMap(key) = {getPolicyId(p, i)};
+                else
+                    xappMap(key) = [xappMap(key), {getPolicyId(p, i)}];
+                end
+            end
+        end
+
+        if isfield(p,'kpi_focus')
+            ks = normalizeStringList(p.kpi_focus);
+            mergedKpiFocus = [mergedKpiFocus; ks]; %#ok<AGROW>
+            for ki = 1:numel(ks)
+                key = char(ks(ki));
+                if ~isKey(kpiMap, key)
+                    kpiMap(key) = {getPolicyId(p, i)};
+                else
+                    kpiMap(key) = [kpiMap(key), {getPolicyId(p, i)}];
+                end
+            end
         end
     end
 
     mergedXApps = unique(mergedXApps, 'stable');
+    mergedKpiFocus = unique(mergedKpiFocus, 'stable');
 
-    % Conflict detection (pairwise)
-    for i = 1:numP
-        for j = i+1:numP
-            pa = policies(i);
-            pb = policies(j);
+    % Conflict resolution (random winner for overlap items)
+    kpiKeys = keys(kpiMap);
+    for i = 1:numel(kpiKeys)
+        key = kpiKeys{i};
+        policiesForKey = kpiMap(key);
+        if numel(policiesForKey) > 1
+            winner = policiesForKey{randi(numel(policiesForKey))};
+            c = struct();
+            c.kpi = string(key);
+            c.policies = string(policiesForKey);
+            c.winner = string(winner);
+            kpiConflicts = [kpiConflicts; c]; %#ok<AGROW>
+        end
+    end
 
-            if isfield(pa,'status')
-                stA = string(pa.status);
-                if ~any(stA == "active")
-                    continue;
-                end
-            end
-            if isfield(pb,'status')
-                stB = string(pb.status);
-                if ~any(stB == "active")
-                    continue;
-                end
-            end
-
-            % KPI conflict
-            kpiA = string.empty(1,0);
-            kpiB = string.empty(1,0);
-            if isfield(pa,'kpi_focus')
-                kpiA = normalizeStringList(pa.kpi_focus);
-            end
-            if isfield(pb,'kpi_focus')
-                kpiB = normalizeStringList(pb.kpi_focus);
-            end
-            kpiOverlap = intersect(kpiA, kpiB);
-            if ~isempty(kpiOverlap)
-                c = struct();
-                c.policy_a = string(getPolicyId(pa, i));
-                c.policy_b = string(getPolicyId(pb, j));
-                c.kpi = kpiOverlap;
-                kpiConflicts = [kpiConflicts; c]; %#ok<AGROW>
-            end
-
-            % xApp conflict
-            xA = string.empty(1,0);
-            xB = string.empty(1,0);
-            if isfield(pa,'enabledXApps')
-                xA = normalizeStringList(pa.enabledXApps);
-            end
-            if isfield(pb,'enabledXApps')
-                xB = normalizeStringList(pb.enabledXApps);
-            end
-            xOverlap = intersect(xA, xB);
-            if ~isempty(xOverlap)
-                c = struct();
-                c.policy_a = string(getPolicyId(pa, i));
-                c.policy_b = string(getPolicyId(pb, j));
-                c.xapp = xOverlap;
-                xappConflicts = [xappConflicts; c]; %#ok<AGROW>
-            end
+    xappKeys = keys(xappMap);
+    for i = 1:numel(xappKeys)
+        key = xappKeys{i};
+        policiesForKey = xappMap(key);
+        if numel(policiesForKey) > 1
+            winner = policiesForKey{randi(numel(policiesForKey))};
+            c = struct();
+            c.xapp = string(key);
+            c.policies = string(policiesForKey);
+            c.winner = string(winner);
+            xappConflicts = [xappConflicts; c]; %#ok<AGROW>
         end
     end
 

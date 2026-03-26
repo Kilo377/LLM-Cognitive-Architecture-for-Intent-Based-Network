@@ -50,3 +50,14 @@ def get_xapp_pool(report: Dict[str, Any]) -> List[Dict[str, Any]]:
     if isinstance(pool, list):
         return pool
     return []
+
+
+if __name__ == "__main__":
+    data = load_report()
+    policy = data.get("policy", {})
+    current = policy.get("current", {}) if isinstance(policy, dict) else {}
+
+    print("[policy]")
+    print(json.dumps(policy, ensure_ascii=False, indent=2))
+    print("\n[current]")
+    print(json.dumps(current, ensure_ascii=False, indent=2))

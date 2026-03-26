@@ -113,6 +113,7 @@ function run_nonrt_general()
         mean(p50Sinr(mask), 'omitnan'), mean(p90Sinr(mask), 'omitnan'));
 
     printLastConflict(ric);
+    printNonRTConflict(nonrt);
 
     if isfield(kernel.ctx.tmp,'kpi')
         fprintf('\n===== Non-RT KPI Full Dump =====\n');
@@ -234,6 +235,30 @@ function [xapps, kpiFocus] = readPolicySummary(nonrt, ric)
             end
         end
     catch
+    end
+end
+
+function printNonRTConflict(nonrt)
+    if isprop(nonrt,'lastConflict') && ~isempty(nonrt.lastConflict)
+        lc = nonrt.lastConflict;
+        if isfield(lc,'kpi') && ~isempty(lc.kpi)
+            fprintf('\n===== Non-RT KPI Conflicts =====\n');
+            for i = 1:numel(lc.kpi)
+                c = lc.kpi(i);
+                fprintf('kpi=%s winner=%s candidates=%s\n', ...
+                    c.kpi, c.winner, strjoin(cellstr(c.policies(:)), ','));
+            end
+        end
+        if isfield(lc,'xapp') && ~isempty(lc.xapp)
+            fprintf('\n===== Non-RT xApp Conflicts =====\n');
+            for i = 1:numel(lc.xapp)
+                c = lc.xapp(i);
+                fprintf('xapp=%s winner=%s candidates=%s\n', ...
+                    c.xapp, c.winner, strjoin(cellstr(c.policies(:)), ','));
+            end
+        end
+    else
+        fprintf('\nNo Non-RT conflicts detected.\n');
     end
 end
 

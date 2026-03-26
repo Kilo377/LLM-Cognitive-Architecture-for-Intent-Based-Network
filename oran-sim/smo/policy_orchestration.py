@@ -25,6 +25,13 @@ def build_prompt(
     kpi = get_kpi(report)
     control = get_control(report)
     state = get_state(report)
+    current = {}
+    policy = report.get("policy", {})
+    if isinstance(policy, dict):
+        current = policy.get("current", {})
+    deployed = []
+    if isinstance(current, dict) and "enabledXApps" in current:
+        deployed = current.get("enabledXApps", [])
 
     prompt = []
     prompt.append("你是RAN策略编排助手，请根据输入选择xApp集合。")
@@ -46,6 +53,10 @@ def build_prompt(
     prompt.append("")
     prompt.append("xApp池:")
     prompt.append(json.dumps(xapps, ensure_ascii=False))
+    prompt.append("")
+    prompt.append("已部署策略(current.enabledXApps):")
+    prompt.append(json.dumps(deployed, ensure_ascii=False))
+    prompt.append("约束: 不要选择已经部署的xApp。")
     prompt.append("")
     prompt.append("reasoning需为简短中文理由，不要包含多余格式。")
     prompt.append("kpi_focus请填写与意图相关的KPI名称列表。")

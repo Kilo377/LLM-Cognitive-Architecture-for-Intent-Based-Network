@@ -1,7 +1,7 @@
 {
   "meta": {
     "schema": "knowledge_graph",
-    "generatedAt": "2026-03-26T15:20:48.400696+00:00"
+    "generatedAt": "2026-03-26T16:08:24.375181+00:00"
   },
   "nodes": [
     {
@@ -71,7 +71,17 @@
       "meta": {
         "description": "Intent rApp",
         "intent": "提升用户连接质量, 降低能耗",
-        "result": "selected Throughput Maximizer xApp, Interference Mitigator xApp"
+        "result": "selected xapp_drop_reducer, xapp_interference_mitigator"
+      }
+    },
+    {
+      "id": "rapp:提升吞吐",
+      "type": "rapp",
+      "name": "Intent rApp",
+      "meta": {
+        "description": "Intent rApp",
+        "intent": "提升吞吐",
+        "result": "selected xapp_throughput_maximizer"
       }
     },
     {
@@ -384,6 +394,51 @@
       "type": "orchestrates"
     },
     {
+      "source": "rapp:提升用户连接质量_降低能耗",
+      "target": "Throughput Maximizer xApp",
+      "type": "orchestrates"
+    },
+    {
+      "source": "rapp:提升用户连接质量_降低能耗",
+      "target": "Interference Mitigator xApp",
+      "type": "orchestrates"
+    },
+    {
+      "source": "rapp:提升用户连接质量_降低能耗",
+      "target": "Fairness Scheduler xApp",
+      "type": "orchestrates"
+    },
+    {
+      "source": "rapp:提升用户连接质量_降低能耗",
+      "target": "Drop Reducer xApp",
+      "type": "orchestrates"
+    },
+    {
+      "source": "rapp:提升用户连接质量_降低能耗",
+      "target": "xapp_drop_reducer",
+      "type": "orchestrates"
+    },
+    {
+      "source": "rapp:提升用户连接质量_降低能耗",
+      "target": "xapp_interference_mitigator",
+      "type": "orchestrates"
+    },
+    {
+      "source": "rapp:提升吞吐",
+      "target": "kpi:throughput",
+      "type": "targets"
+    },
+    {
+      "source": "rapp:提升吞吐",
+      "target": "kpi:top10share",
+      "type": "targets"
+    },
+    {
+      "source": "rapp:提升吞吐",
+      "target": "xapp:xapp_throughput_maximizer",
+      "type": "orchestrates"
+    },
+    {
       "source": "xapp:xapp_capacity_booster",
       "target": "param:radio.txPowerOffset_dB",
       "type": "controls"
@@ -529,13 +584,8 @@
       "type": "affects"
     },
     {
-      "source": "rapp:提升用户连接质量_降低能耗",
-      "target": "Throughput Maximizer xApp",
-      "type": "orchestrates"
-    },
-    {
-      "source": "rapp:提升用户连接质量_降低能耗",
-      "target": "Interference Mitigator xApp",
+      "source": "rapp:提升吞吐",
+      "target": "xapp_throughput_maximizer",
       "type": "orchestrates"
     }
   ]

@@ -2,5 +2,5 @@
   "orchestrator": "graph",
   "provider": "ollama",
   "model": "qwen2.5:14b",
-  "intent_text": "提升用户连接质量, 降低能耗"
+  "intent_text": "提升吞吐"
 }

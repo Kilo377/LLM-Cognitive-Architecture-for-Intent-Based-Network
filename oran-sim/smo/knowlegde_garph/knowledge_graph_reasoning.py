@@ -101,6 +101,24 @@ def build_xapp_descriptions(
     return out
 
 
+def build_xapp_id_map(
+    paths: List[Dict[str, str]],
+    graph: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    if not graph:
+        return {}
+    node_index = {n.get("id"): n for n in graph.get("nodes", []) if n.get("id")}
+    out = {}
+    for p in paths:
+        xapp_id = p.get("xapp", "")
+        if not xapp_id or xapp_id in out:
+            continue
+        node = node_index.get(xapp_id, {})
+        name = node.get("name") or xapp_id
+        out[xapp_id] = name
+    return out
+
+
 def build_path_prompt(
     intent: str,
     paths: List[Dict[str, str]],
@@ -110,18 +128,22 @@ def build_path_prompt(
     deployed_xapps = deployed_xapps or []
     display_paths = build_reasoning_paths(paths, graph)
     xapp_desc = build_xapp_descriptions(paths, graph)
+    xapp_id_map = build_xapp_id_map(paths, graph)
     return (
         "Select the best xApp path(s) for the intent. "
         "Return ONLY JSON. No explanations or extra text.\n\n"
         f"Intent: {intent}\n"
-        f"Reasoning paths: {json.dumps(display_paths, ensure_ascii=False)}\n"
+        f"这是目前的一些备选的路径, 以及其控制链路: {json.dumps(display_paths, ensure_ascii=False)}\n"
         f"xApp descriptions: {json.dumps(xapp_desc, ensure_ascii=False)}\n"
+        f"xApp id to name: {json.dumps(xapp_id_map, ensure_ascii=False)}\n"
         f"Deployed xApps (current.enabledXApps): {deployed_xapps}\n"
         "Constraints:\n"
         "- Do not choose paths with already deployed xApps.\n"
         "- Consider potential conflicts across selected paths.\n"
+        "- You may choose multiple paths if helpful. but should avoid conflict as possible\n"
+        "- The `xapp` field MUST use xapp_id (e.g., xapp_drop_reducer), not the name.\n"
         "- Add a short `reasoning` string.\n"
-        'Output format (single): {"xapp":..., "parameter":..., "kpi":..., "reasoning":"..."}\n'
+        'Output format (single): {"xapp":"xapp_drop_reducer", "parameter":..., "kpi":..., "reasoning":"..."}\n'
         "Output format (multiple): [{...}, {...}]\n"
     )
 
